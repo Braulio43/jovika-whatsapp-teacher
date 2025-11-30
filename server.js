@@ -39,6 +39,9 @@ const students = {};
 // Guarda IDs de mensagens já processadas para evitar respostas duplicadas
 const processedMessages = new Set();
 
+// Guarda último "momment" por número para evitar duplicados do mesmo evento
+const lastMomentByPhone = {};
+
 /** ---------- Trilhas de ensino (módulos estruturados) ---------- **/
 
 const learningPath = {
@@ -268,12 +271,11 @@ async function transcreverAudio(audioUrl) {
     const tempPath = await downloadToTempFile(audioUrl);
 
     const transcription = await openai.audio.transcriptions.create({
-      model: "gpt-4o-mini-transcribe", // modelo novo de transcrição
+      model: "gpt-4o-mini-transcribe",
       file: fs.createReadStream(tempPath),
-      language: "pt" // a maioria dos alunos vai falar PT
+      language: "pt"
     });
 
-    // apagar ficheiro temporário (se falhar, não é o fim do mundo)
     fs.promises.unlink(tempPath).catch(() => {});
 
     console.log("📝 Transcrição:", transcription.text);
@@ -304,18 +306,10 @@ async function enviarMensagemWhatsApp(phone, message) {
 
     console.log("🌍 URL Z-API usada:", url);
 
-    const payload = {
-      phone,   // ex: "3519..."
-      message  // texto da mensagem
-    };
+    const payload = { phone, message };
 
-    const headers = {
-      "Content-Type": "application/json"
-    };
-
-    if (clientToken) {
-      headers["Client-Token"] = clientToken;
-    }
+    const headers = { "Content-Type": "application/json" };
+    if (clientToken) headers["Client-Token"] = clientToken;
 
     const resp = await axios.post(url, payload, { headers });
     console.log("📤 Mensagem enviada via Z-API para", phone, "resp:", resp.data);
@@ -333,7 +327,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   let aluno = students[numeroAluno];
   const agora = new Date();
 
-  // Se é a primeira vez que este aluno fala com o Kito
   if (!aluno) {
     aluno = {
       stage: "ask_name",
@@ -359,16 +352,13 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Atualiza stats
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
 
-  // Guardar mensagem do aluno na memória
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
 
-  // 1) Perguntar / guardar nome
   if (aluno.stage === "ask_name" && !aluno.nome) {
     const nome = extrairNome(texto) || "Aluno";
     aluno.nome = nome;
@@ -380,7 +370,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     );
   }
 
-  // 2) Perguntar idioma (apenas uma vez)
   else if (aluno.stage === "ask_language") {
     const idioma = detectarIdioma(texto);
 
@@ -411,16 +400,13 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     }
   }
 
-  // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
   else {
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
     }
 
     const idiomaChave =
-      aluno.idioma === "frances"
-        ? "frances"
-        : "ingles"; // se for "ambos", usamos inglês como base por enquanto
+      aluno.idioma === "frances" ? "frances" : "ingles";
 
     const trilha = learningPath[idiomaChave] || learningPath["ingles"];
     let moduleIndex = aluno.moduleIndex ?? 0;
@@ -428,7 +414,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
     let moduloAtual = trilha[moduleIndex] || trilha[0];
 
-    // Se o aluno respondeu algo tipo "sim", "quero", "bora", interpreta como "continua"
     const confirmacao = isConfirmMessage(texto);
     if (confirmacao) {
       console.log("✅ Confirmação de continuar módulo recebida.");
@@ -439,16 +424,13 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     }
     moduloAtual = trilha[moduleIndex];
 
-    // Gera resposta do Kito com base no histórico e módulo
     const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
 
-    // Atualiza progresso no módulo depois de responder (avança 1 passo)
     moduleStep += 1;
     const totalSteps = moduloAtual.steps || 4;
     if (moduleStep >= totalSteps) {
       moduleIndex += 1;
       moduleStep = 0;
-
       if (moduleIndex >= trilha.length) {
         moduleIndex = trilha.length - 1;
       }
@@ -457,10 +439,8 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     aluno.moduleIndex = moduleIndex;
     aluno.moduleStep = moduleStep;
 
-    // Guardar resposta do Kito na memória
     aluno.history.push({ role: "assistant", content: respostaKito });
 
-    // delay para parecer mais humano
     await sleep(1200);
     await enviarMensagemWhatsApp(numeroAluno, respostaKito);
   }
@@ -475,28 +455,34 @@ app.post("/zapi-webhook", async (req, res) => {
   console.log("📩 Webhook Z-API recebido:", JSON.stringify(data, null, 2));
 
   try {
-    // Apenas mensagens recebidas
     if (data.type !== "ReceivedCallback") {
       return res.status(200).send("ignored_non_received");
     }
 
     const msgId = data.messageId;
+    const numeroAluno = data.phone;
+    const momentVal = data.momment; // timestamp da Z-API
 
-    // ----- EVITAR DUPLICADOS -----
+    // 1ª defesa: messageId (quando é igual)
     if (processedMessages.has(msgId)) {
-      console.log("⚠️ Mensagem duplicada ignorada:", msgId);
+      console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
       return res.status(200).send("duplicate_ignored");
     }
     processedMessages.add(msgId);
 
-    const numeroAluno = data.phone; // ex: "351964832151"
-    const profileName = data.senderName || data.chatName || "Aluno";
+    // 2ª defesa: mesmo momment para o mesmo número
+    if (momentVal && lastMomentByPhone[numeroAluno] === momentVal) {
+      console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
+      return res.status(200).send("duplicate_moment_ignored");
+    }
+    if (momentVal) {
+      lastMomentByPhone[numeroAluno] = momentVal;
+    }
 
-    // Tentar detetar texto e/ou áudio
+    const profileName = data.senderName || data.chatName || "Aluno";
     const texto = data.text?.message || null;
 
-    // ⚠️ IMPORTANTE:
-    // Ajusta aqui quando vires no log qual é o campo correto da Z-API para áudio.
+    // ⚠️ Ajusta aqui assim que vires nos logs qual é o campo certo da Z-API para áudio
     const audioUrl =
       data.audioUrl ||
       data.audio?.url ||
@@ -509,7 +495,6 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("no_text_or_audio");
     }
 
-    // Se for áudio, transcrever primeiro
     if (audioUrl && !texto) {
       const transcricao = await transcreverAudio(audioUrl);
 
@@ -532,7 +517,6 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("ok_audio");
     }
 
-    // Se tiver texto (mensagem normal ou áudio + legenda), trata como texto
     await processarMensagemAluno({
       numeroAluno,
       texto,

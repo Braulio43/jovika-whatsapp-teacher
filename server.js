@@ -1,4 +1,4 @@
-// server.js - Kito, professor da Jovika Academy (Z-API + memória + módulos + Dashboard + ÁUDIO)
+// server.js - Kito, professor da Jovika Academy (Z-API + memória + módulos + Dashboard + ÁUDIO + FIREBASE)
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { db } from "./firebaseAdmin.js"; // 🔥 Firestore
 
 dotenv.config();
 
@@ -17,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 // Para receber JSON da Z-API
 app.use(bodyParser.json());
 
-// "Base de dados" simples em memória (por enquanto)
+// "Base de dados" em memória (cache) + Firestore
 /*
 students[phone] = {
   nome: string | null,
@@ -34,7 +35,7 @@ students[phone] = {
   ]
 }
 */
-const students = {};
+const students = {}; // cache local
 
 // Guarda IDs de mensagens já processadas para evitar respostas duplicadas
 const processedMessages = new Set();
@@ -134,9 +135,59 @@ function isConfirmMessage(texto = "") {
 function formatDate(d) {
   if (!d) return "-";
   try {
+    if (d.toDate) return d.toDate().toLocaleString("pt-PT");
     return new Date(d).toLocaleString("pt-PT");
   } catch {
     return String(d);
+  }
+}
+
+/** ---------- FIREBASE HELPERS (load/save aluno) ---------- **/
+
+async function loadStudentFromFirestore(phone) {
+  // 1º tenta cache
+  if (students[phone]) return students[phone];
+
+  try {
+    const docRef = db.collection("students").doc(phone);
+    const snap = await docRef.get();
+    if (!snap.exists) return null;
+    const data = snap.data();
+
+    const aluno = {
+      stage: data.stage || "ask_name",
+      nome: data.nome || null,
+      idioma: data.idioma || null,
+      nivel: data.nivel || "A0",
+      messagesCount: data.messagesCount || 0,
+      createdAt: data.createdAt || new Date(),
+      lastMessageAt: data.lastMessageAt || new Date(),
+      moduleIndex: data.moduleIndex ?? 0,
+      moduleStep: data.moduleStep ?? 0,
+      history: Array.isArray(data.history) ? data.history : []
+    };
+
+    students[phone] = aluno;
+    return aluno;
+  } catch (err) {
+    console.error("❌ Erro ao carregar aluno do Firestore:", err.message || err);
+    return null;
+  }
+}
+
+async function saveStudentToFirestore(phone, aluno) {
+  try {
+    const dataToSave = {
+      ...aluno,
+      createdAt: aluno.createdAt || new Date(),
+      lastMessageAt: aluno.lastMessageAt || new Date(),
+      updatedAt: new Date()
+    };
+
+    await db.collection("students").doc(phone).set(dataToSave, { merge: true });
+    students[phone] = aluno; // atualiza cache
+  } catch (err) {
+    console.error("❌ Erro ao guardar aluno no Firestore:", err.message || err);
   }
 }
 
@@ -246,7 +297,7 @@ falar o idioma, não só decorar regras.
   ];
 
   const resposta = await openai.responses.create({
-    model: "gpt-4.1-mini",
+    model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
     input: mensagens
   });
 
@@ -327,9 +378,10 @@ async function enviarMensagemWhatsApp(phone, message) {
 /** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
 
 async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
-  let aluno = students[numeroAluno];
+  let aluno = await loadStudentFromFirestore(numeroAluno);
   const agora = new Date();
 
+  // Novo aluno
   if (!aluno) {
     aluno = {
       stage: "ask_name",
@@ -343,7 +395,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       moduleStep: 0,
       history: []
     };
-    students[numeroAluno] = aluno;
 
     const primeiroNome = extrairNome(profileName) || "Aluno";
 
@@ -352,9 +403,11 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       `Boas, ${primeiroNome}! 😄 Eu sou o Kito, professor de inglês e francês da Jovika Academy.\nComo queres que eu te chame?`
     );
 
+    await saveStudentToFirestore(numeroAluno, aluno);
     return;
   }
 
+  // Atualiza stats
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
@@ -362,6 +415,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
 
+  // 1) Perguntar / guardar nome
   if (aluno.stage === "ask_name" && !aluno.nome) {
     const nome = extrairNome(texto) || "Aluno";
     aluno.nome = nome;
@@ -373,6 +427,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     );
   }
 
+  // 2) Perguntar idioma (apenas uma vez)
   else if (aluno.stage === "ask_language") {
     const idioma = detectarIdioma(texto);
 
@@ -403,6 +458,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     }
   }
 
+  // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
   else {
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
@@ -448,7 +504,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     await enviarMensagemWhatsApp(numeroAluno, respostaKito);
   }
 
-  students[numeroAluno] = aluno;
+  await saveStudentToFirestore(numeroAluno, aluno);
 }
 
 /** ---------- WEBHOOK Z-API ---------- **/
@@ -505,7 +561,7 @@ app.post("/zapi-webhook", async (req, res) => {
 
     const profileName = data.senderName || data.chatName || "Aluno";
 
-    // ⚠️ Ajusta aqui assim que vires nos logs qual é o campo certo da Z-API para áudio
+    // ⚠️ Ajustar se a Z-API enviar o áudio noutro campo
     const audioUrl =
       data.audioUrl ||
       data.audio?.url ||
@@ -559,38 +615,44 @@ app.post("/zapi-webhook", async (req, res) => {
 
 /** ---------- DASHBOARD HTML (/admin/dashboard) ---------- **/
 
-app.get("/admin/dashboard", (req, res) => {
+app.get("/admin/dashboard", async (req, res) => {
   const token = req.query.token;
   if (!token || token !== process.env.ADMIN_TOKEN) {
     return res.status(401).send("Não autorizado");
   }
 
-  const alunos = Object.entries(students).map(([numero, dados]) => ({
-    numero,
-    nome: dados.nome || "-",
-    idioma: dados.idioma || "-",
-    nivel: dados.nivel || "-",
-    mensagens: dados.messagesCount || 0,
-    stage: dados.stage,
-    moduleIndex: dados.moduleIndex ?? 0,
-    moduleStep: dados.moduleStep ?? 0,
-    createdAt: dados.createdAt,
-    lastMessageAt: dados.lastMessageAt
-  }));
+  try {
+    const snapshot = await db.collection("students").get();
+    const alunos = snapshot.docs.map((doc) => {
+      const dados = doc.data();
+      return {
+        numero: doc.id,
+        nome: dados.nome || "-",
+        idioma: dados.idioma || "-",
+        nivel: dados.nivel || "-",
+        mensagens: dados.messagesCount || 0,
+        stage: dados.stage || "ask_name",
+        moduleIndex: dados.moduleIndex ?? 0,
+        moduleStep: dados.moduleStep ?? 0,
+        createdAt: dados.createdAt,
+        lastMessageAt: dados.lastMessageAt
+      };
+    });
 
-  const total = alunos.length;
-  const ingles = alunos.filter((a) => a.idioma === "ingles").length;
-  const frances = alunos.filter((a) => a.idioma === "frances").length;
-  const ambos = alunos.filter((a) => a.idioma === "ambos").length;
+    const total = alunos.length;
+    const ingles = alunos.filter((a) => a.idioma === "ingles").length;
+    const frances = alunos.filter((a) => a.idioma === "frances").length;
+    const ambos = alunos.filter((a) => a.idioma === "ambos").length;
 
-  const agora = new Date();
-  const ativos24h = alunos.filter((a) => {
-    if (!a.lastMessageAt) return false;
-    const diff = agora - new Date(a.lastMessageAt);
-    return diff <= 24 * 60 * 60 * 1000;
-  }).length;
+    const agora = new Date();
+    const ativos24h = alunos.filter((a) => {
+      if (!a.lastMessageAt) return false;
+      const d = a.lastMessageAt.toDate ? a.lastMessageAt.toDate() : new Date(a.lastMessageAt);
+      const diff = agora - d;
+      return diff <= 24 * 60 * 60 * 1000;
+    }).length;
 
-  const html = `
+    const html = `
 <!DOCTYPE html>
 <html lang="pt">
 <head>
@@ -828,50 +890,63 @@ app.get("/admin/dashboard", (req, res) => {
   </div>
 </body>
 </html>
-  `;
+    `;
 
-  res.send(html);
+    res.send(html);
+  } catch (err) {
+    console.error("❌ Erro ao carregar dashboard:", err.message || err);
+    res.status(500).send("Erro ao carregar dashboard");
+  }
 });
 
 /** ---------- /admin/stats (JSON para integrações futuras) ---------- **/
 
-app.get("/admin/stats", (req, res) => {
+app.get("/admin/stats", async (req, res) => {
   const token = req.query.token;
   if (!token || token !== process.env.ADMIN_TOKEN) {
     return res.status(401).send("Não autorizado");
   }
 
-  const alunos = Object.entries(students).map(([numero, dados]) => ({
-    numero,
-    nome: dados.nome,
-    idioma: dados.idioma,
-    nivel: dados.nivel,
-    mensagens: dados.messagesCount || 0,
-    stage: dados.stage,
-    moduleIndex: dados.moduleIndex ?? 0,
-    moduleStep: dados.moduleStep ?? 0,
-    createdAt: dados.createdAt,
-    lastMessageAt: dados.lastMessageAt
-  }));
+  try {
+    const snapshot = await db.collection("students").get();
+    const alunos = snapshot.docs.map((doc) => {
+      const dados = doc.data();
+      return {
+        numero: doc.id,
+        nome: dados.nome,
+        idioma: dados.idioma,
+        nivel: dados.nivel,
+        mensagens: dados.messagesCount || 0,
+        stage: dados.stage,
+        moduleIndex: dados.moduleIndex ?? 0,
+        moduleStep: dados.moduleStep ?? 0,
+        createdAt: dados.createdAt,
+        lastMessageAt: dados.lastMessageAt
+      };
+    });
 
-  const total = alunos.length;
-  const ingles = alunos.filter((a) => a.idioma === "ingles").length;
-  const frances = alunos.filter((a) => a.idioma === "frances").length;
-  const ambos = alunos.filter((a) => a.idioma === "ambos").length;
+    const total = alunos.length;
+    const ingles = alunos.filter((a) => a.idioma === "ingles").length;
+    const frances = alunos.filter((a) => a.idioma === "frances").length;
+    const ambos = alunos.filter((a) => a.idioma === "ambos").length;
 
-  res.json({
-    totalAlunos: total,
-    porIdioma: { ingles, frances, ambos },
-    alunos
-  });
+    res.json({
+      totalAlunos: total,
+      porIdioma: { ingles, frances, ambos },
+      alunos
+    });
+  } catch (err) {
+    console.error("❌ Erro em /admin/stats:", err.message || err);
+    res.status(500).json({ error: "Erro ao carregar stats" });
+  }
 });
 
 // Rota de teste
 app.get("/", (req, res) => {
-  res.send("Servidor Kito (Jovika Academy, Z-API + memória + módulos + áudio) está a correr ✅");
+  res.send("Servidor Kito (Jovika Academy, Z-API + memória + módulos + áudio + Firebase) está a correr ✅");
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard + áudio) a correr em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard + áudio + Firebase) a correr em http://localhost:${PORT}`);
 });

@@ -42,6 +42,9 @@ const processedMessages = new Set();
 // Guarda último "momment" por número para evitar duplicados do mesmo evento
 const lastMomentByPhone = {};
 
+// Guarda último texto recente por número para ignorar duplicados em poucos segundos
+const lastTextByPhone = {};
+
 /** ---------- Trilhas de ensino (módulos estruturados) ---------- **/
 
 const learningPath = {
@@ -462,8 +465,9 @@ app.post("/zapi-webhook", async (req, res) => {
     const msgId = data.messageId;
     const numeroAluno = data.phone;
     const momentVal = data.momment; // timestamp da Z-API
+    const texto = data.text?.message || null;
 
-    // 1ª defesa: messageId (quando é igual)
+    // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
       console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
       return res.status(200).send("duplicate_ignored");
@@ -479,8 +483,27 @@ app.post("/zapi-webhook", async (req, res) => {
       lastMomentByPhone[numeroAluno] = momentVal;
     }
 
+    // 3ª defesa: mesmo texto em poucos segundos para o mesmo número
+    const agora = Date.now();
+    const ultimo = lastTextByPhone[numeroAluno];
+    if (
+      texto &&
+      ultimo &&
+      ultimo.text === texto &&
+      agora - ultimo.time < 3000 // 3 segundos
+    ) {
+      console.log(
+        "⚠️ Mensagem duplicada ignorada (texto + tempo):",
+        msgId,
+        texto
+      );
+      return res.status(200).send("duplicate_text_recent");
+    }
+    if (texto) {
+      lastTextByPhone[numeroAluno] = { text: texto, time: agora };
+    }
+
     const profileName = data.senderName || data.chatName || "Aluno";
-    const texto = data.text?.message || null;
 
     // ⚠️ Ajusta aqui assim que vires nos logs qual é o campo certo da Z-API para áudio
     const audioUrl =

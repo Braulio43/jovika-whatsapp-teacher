@@ -210,7 +210,6 @@ CORREÇÃO DE ERROS:
   - Mostra a frase original dele
   - Mostra a versão corrigida
   - Faz uma explicação rápida do porquê (sem excesso de gramática pesada)
-- Mantém o tom positivo. Nada de "está errado", prefere "podemos melhorar assim".
 
 TOM EMOCIONAL:
 - Se o aluno demonstra dificuldade, desmotivação ou cansaço, responde de forma
@@ -286,6 +285,12 @@ app.post("/zapi-webhook", async (req, res) => {
   console.log("📩 Webhook Z-API recebido:", JSON.stringify(data, null, 2));
 
   try {
+    // Ignorar mensagens enviadas pelo próprio número (respostas do Kito)
+    if (data.fromMe) {
+      console.log("ℹ️ Ignorado: mensagem enviada pelo próprio número (fromMe = true)");
+      return res.status(200).send("ignored_from_me");
+    }
+
     // Só tratamos mensagens recebidas do tipo "ReceivedCallback" com texto
     if (data.type !== "ReceivedCallback" || !data.text?.message) {
       return res.status(200).send("ok");

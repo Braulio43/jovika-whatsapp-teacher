@@ -1,9 +1,13 @@
-// server.js - Kito, professor da Jovika Academy (Z-API + memória + módulos + Dashboard)
+// server.js - Kito, professor da Jovika Academy (Z-API + memória + módulos + Dashboard + ÁUDIO)
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import axios from "axios";
 import OpenAI from "openai";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 dotenv.config();
 
@@ -180,6 +184,12 @@ DADOS DO ALUNO:
 - Passo atual (0-based): ${step}
 - Número total de passos no módulo: ${totalSteps}
 
+SOBRE ÁUDIO:
+- Às vezes o aluno manda áudio. Nós usamos uma transcrição automática do que ele disse.
+- Tu NÃO tens acesso direto ao som, só ao TEXTO transcrito.
+- Portanto, não inventes detalhes específicos de pronúncia (tipo "você falou o TH errado").
+- Podes falar de pronúncia de forma geral (ritmo, clareza, prática), mas sem detalhes inventados.
+
 COMO O KITO PENSA E AGE:
 - Tu lembras-te do contexto da conversa (histórico) e não repetes perguntas iniciais
   como nome, idioma ou objetivo.
@@ -210,6 +220,7 @@ CORREÇÃO DE ERROS:
   - Mostra a frase original dele
   - Mostra a versão corrigida
   - Faz uma explicação rápida do porquê (sem excesso de gramática pesada)
+- Mantém o tom positivo. Nada de "está errado", prefere "podemos melhorar assim". 
 
 TOM EMOCIONAL:
 - Se o aluno demonstra dificuldade, desmotivação ou cansaço, responde de forma
@@ -236,6 +247,44 @@ falar o idioma, não só decorar regras.
   const textoGerado = resposta.output[0].content[0].text;
   console.log("🧠 Resposta do Kito:", textoGerado);
   return textoGerado;
+}
+
+/** ---------- ÁUDIO: download + transcrição ---------- **/
+
+async function downloadToTempFile(fileUrl) {
+  const cleanUrl = fileUrl.split("?")[0];
+  const ext = cleanUrl.split(".").pop() || "ogg";
+  const tmpPath = path.join(os.tmpdir(), `kito-audio-${randomUUID()}.${ext}`);
+
+  const resp = await axios.get(fileUrl, { responseType: "arraybuffer" });
+  await fs.promises.writeFile(tmpPath, Buffer.from(resp.data));
+
+  return tmpPath;
+}
+
+async function transcreverAudio(audioUrl) {
+  try {
+    console.log("🎧 Transcrevendo áudio:", audioUrl);
+    const tempPath = await downloadToTempFile(audioUrl);
+
+    const transcription = await openai.audio.transcriptions.create({
+      model: "gpt-4o-mini-transcribe", // modelo novo de transcrição
+      file: fs.createReadStream(tempPath),
+      language: "pt" // a maioria dos alunos vai falar PT
+    });
+
+    // apagar ficheiro temporário (se falhar, não é o fim do mundo)
+    fs.promises.unlink(tempPath).catch(() => {});
+
+    console.log("📝 Transcrição:", transcription.text);
+    return transcription.text;
+  } catch (err) {
+    console.error(
+      "❌ Erro ao transcrever áudio:",
+      err.response?.data || err.message
+    );
+    return null;
+  }
 }
 
 /** ---------- Enviar mensagem pela Z-API ---------- **/
@@ -278,6 +327,147 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
+/** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
+
+async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
+  let aluno = students[numeroAluno];
+  const agora = new Date();
+
+  // Se é a primeira vez que este aluno fala com o Kito
+  if (!aluno) {
+    aluno = {
+      stage: "ask_name",
+      nome: null,
+      idioma: null,
+      nivel: "A0",
+      messagesCount: 0,
+      createdAt: agora,
+      lastMessageAt: agora,
+      moduleIndex: 0,
+      moduleStep: 0,
+      history: []
+    };
+    students[numeroAluno] = aluno;
+
+    const primeiroNome = extrairNome(profileName) || "Aluno";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      `Boas, ${primeiroNome}! 😄 Eu sou o Kito, professor de inglês e francês da Jovika Academy.\nComo queres que eu te chame?`
+    );
+
+    return;
+  }
+
+  // Atualiza stats
+  aluno.messagesCount = (aluno.messagesCount || 0) + 1;
+  aluno.lastMessageAt = agora;
+  aluno.history = aluno.history || [];
+
+  // Guardar mensagem do aluno na memória
+  const prefix = isAudio ? "[ÁUDIO] " : "";
+  aluno.history.push({ role: "user", content: `${prefix}${texto}` });
+
+  // 1) Perguntar / guardar nome
+  if (aluno.stage === "ask_name" && !aluno.nome) {
+    const nome = extrairNome(texto) || "Aluno";
+    aluno.nome = nome;
+    aluno.stage = "ask_language";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      `Fechou, ${nome}! 😄 Agora diz-me: queres começar por inglês, francês ou os dois?`
+    );
+  }
+
+  // 2) Perguntar idioma (apenas uma vez)
+  else if (aluno.stage === "ask_language") {
+    const idioma = detectarIdioma(texto);
+
+    if (!idioma) {
+      await enviarMensagemWhatsApp(
+        numeroAluno,
+        "Acho que não apanhei bem 😅\nResponde só com: inglês, francês ou os dois."
+      );
+    } else {
+      aluno.idioma = idioma;
+      aluno.stage = "learning";
+      aluno.moduleIndex = 0;
+      aluno.moduleStep = 0;
+      aluno.nivel = "A0";
+
+      const idiomaTexto =
+        idioma === "ingles"
+          ? "inglês"
+          : idioma === "frances"
+          ? "francês"
+          : "inglês e francês";
+
+      await enviarMensagemWhatsApp(
+        numeroAluno,
+        `Perfeito, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\n` +
+          `Primeiro, diz-me qual é o teu objetivo com esse idioma (ex: trabalho, viagem, confiança, faculdade, sair do país...).`
+      );
+    }
+  }
+
+  // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
+  else {
+    if (aluno.stage !== "learning") {
+      aluno.stage = "learning";
+    }
+
+    const idiomaChave =
+      aluno.idioma === "frances"
+        ? "frances"
+        : "ingles"; // se for "ambos", usamos inglês como base por enquanto
+
+    const trilha = learningPath[idiomaChave] || learningPath["ingles"];
+    let moduleIndex = aluno.moduleIndex ?? 0;
+    let moduleStep = aluno.moduleStep ?? 0;
+
+    let moduloAtual = trilha[moduleIndex] || trilha[0];
+
+    // Se o aluno respondeu algo tipo "sim", "quero", "bora", interpreta como "continua"
+    const confirmacao = isConfirmMessage(texto);
+    if (confirmacao) {
+      console.log("✅ Confirmação de continuar módulo recebida.");
+    }
+
+    if (moduleIndex >= trilha.length) {
+      moduleIndex = trilha.length - 1;
+    }
+    moduloAtual = trilha[moduleIndex];
+
+    // Gera resposta do Kito com base no histórico e módulo
+    const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
+
+    // Atualiza progresso no módulo depois de responder (avança 1 passo)
+    moduleStep += 1;
+    const totalSteps = moduloAtual.steps || 4;
+    if (moduleStep >= totalSteps) {
+      moduleIndex += 1;
+      moduleStep = 0;
+
+      if (moduleIndex >= trilha.length) {
+        moduleIndex = trilha.length - 1;
+      }
+    }
+
+    aluno.moduleIndex = moduleIndex;
+    aluno.moduleStep = moduleStep;
+
+    // Guardar resposta do Kito na memória
+    aluno.history.push({ role: "assistant", content: respostaKito });
+
+    // delay para parecer mais humano
+    await sleep(1200);
+    await enviarMensagemWhatsApp(numeroAluno, respostaKito);
+  }
+
+  students[numeroAluno] = aluno;
+}
+
 /** ---------- WEBHOOK Z-API ---------- **/
 
 app.post("/zapi-webhook", async (req, res) => {
@@ -285,15 +475,9 @@ app.post("/zapi-webhook", async (req, res) => {
   console.log("📩 Webhook Z-API recebido:", JSON.stringify(data, null, 2));
 
   try {
-    // Ignorar mensagens enviadas pelo próprio número (respostas do Kito)
-    if (data.fromMe) {
-      console.log("ℹ️ Ignorado: mensagem enviada pelo próprio número (fromMe = true)");
-      return res.status(200).send("ignored_from_me");
-    }
-
-    // Só tratamos mensagens recebidas do tipo "ReceivedCallback" com texto
-    if (data.type !== "ReceivedCallback" || !data.text?.message) {
-      return res.status(200).send("ok");
+    // Apenas mensagens recebidas
+    if (data.type !== "ReceivedCallback") {
+      return res.status(200).send("ignored_non_received");
     }
 
     const msgId = data.messageId;
@@ -305,148 +489,56 @@ app.post("/zapi-webhook", async (req, res) => {
     }
     processedMessages.add(msgId);
 
-    const numeroAluno = data.phone;       // ex: "351964832151"
-    const texto = data.text.message;      // conteúdo da mensagem
-    const profileName = data.senderName || data.chatName;
+    const numeroAluno = data.phone; // ex: "351964832151"
+    const profileName = data.senderName || data.chatName || "Aluno";
 
-    console.log("👤 De:", numeroAluno);
-    console.log("💬 Mensagem:", texto);
+    // Tentar detetar texto e/ou áudio
+    const texto = data.text?.message || null;
 
-    let aluno = students[numeroAluno];
-    const agora = new Date();
+    // ⚠️ IMPORTANTE:
+    // Ajusta aqui quando vires no log qual é o campo correto da Z-API para áudio.
+    const audioUrl =
+      data.audioUrl ||
+      data.audio?.url ||
+      data.media?.url ||
+      data.voice?.url ||
+      null;
 
-    // Se é a primeira vez que este aluno fala com o Kito
-    if (!aluno) {
-      aluno = {
-        stage: "ask_name",
-        nome: null,
-        idioma: null,
-        nivel: "A0",
-        messagesCount: 0,
-        createdAt: agora,
-        lastMessageAt: agora,
-        moduleIndex: 0,
-        moduleStep: 0,
-        history: []
-      };
-      students[numeroAluno] = aluno;
-
-      const primeiroNome = extrairNome(profileName) || "Aluno";
-
-      await enviarMensagemWhatsApp(
-        numeroAluno,
-        `Boas, ${primeiroNome}! 😄 Eu sou o Kito, professor de inglês e francês da Jovika Academy.\nComo queres que eu te chame?`
-      );
-
-      return res.status(200).send("ok");
+    if (!texto && !audioUrl) {
+      console.log("📭 Mensagem sem texto nem áudio processável.");
+      return res.status(200).send("no_text_or_audio");
     }
 
-    // Atualiza stats
-    aluno.messagesCount = (aluno.messagesCount || 0) + 1;
-    aluno.lastMessageAt = agora;
-    aluno.history = aluno.history || [];
+    // Se for áudio, transcrever primeiro
+    if (audioUrl && !texto) {
+      const transcricao = await transcreverAudio(audioUrl);
 
-    // Guardar mensagem do aluno na memória
-    aluno.history.push({ role: "user", content: texto });
-
-    // 1) Perguntar / guardar nome
-    if (aluno.stage === "ask_name" && !aluno.nome) {
-      const nome = extrairNome(texto) || "Aluno";
-      aluno.nome = nome;
-      aluno.stage = "ask_language";
-
-      await enviarMensagemWhatsApp(
-        numeroAluno,
-        `Fechou, ${nome}! 😄 Agora diz-me: queres começar por inglês, francês ou os dois?`
-      );
-    }
-
-    // 2) Perguntar idioma (apenas uma vez)
-    else if (aluno.stage === "ask_language") {
-      const idioma = detectarIdioma(texto);
-
-      if (!idioma) {
+      if (!transcricao) {
         await enviarMensagemWhatsApp(
           numeroAluno,
-          "Acho que não apanhei bem 😅\nResponde só com: inglês, francês ou os dois."
+          "Tentei ouvir o teu áudio mas não consegui transcrever bem 😅\n" +
+            "Podes tentar falar um pouco mais perto do micro ou enviar de novo?"
         );
-      } else {
-        aluno.idioma = idioma;
-        aluno.stage = "learning";
-        aluno.moduleIndex = 0;
-        aluno.moduleStep = 0;
-        aluno.nivel = "A0";
-
-        const idiomaTexto =
-          idioma === "ingles"
-            ? "inglês"
-            : idioma === "frances"
-            ? "francês"
-            : "inglês e francês";
-
-        await enviarMensagemWhatsApp(
-          numeroAluno,
-          `Perfeito, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\n` +
-            `Primeiro, diz-me qual é o teu objetivo com esse idioma (ex: trabalho, viagem, confiança, faculdade, sair do país...).`
-        );
+        return res.status(200).send("audio_transcription_failed");
       }
+
+      await processarMensagemAluno({
+        numeroAluno,
+        texto: transcricao,
+        profileName,
+        isAudio: true
+      });
+
+      return res.status(200).send("ok_audio");
     }
 
-    // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
-    else {
-      if (aluno.stage !== "learning") {
-        aluno.stage = "learning";
-      }
-
-      const idiomaChave =
-        aluno.idioma === "frances"
-          ? "frances"
-          : "ingles"; // se for "ambos", usamos inglês como base por enquanto
-
-      const trilha = learningPath[idiomaChave] || learningPath["ingles"];
-      let moduleIndex = aluno.moduleIndex ?? 0;
-      let moduleStep = aluno.moduleStep ?? 0;
-
-      let moduloAtual = trilha[moduleIndex] || trilha[0];
-
-      // Se o aluno respondeu algo tipo "sim", "quero", "bora", interpreta como "continua"
-      const confirmacao = isConfirmMessage(texto);
-      if (confirmacao) {
-        console.log("✅ Confirmação de continuar módulo recebida.");
-      }
-
-      if (moduleIndex >= trilha.length) {
-        moduleIndex = trilha.length - 1;
-      }
-      moduloAtual = trilha[moduleIndex];
-
-      // Gera resposta do Kito com base no histórico e módulo
-      const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
-
-      // Atualiza progresso no módulo depois de responder (avança 1 passo)
-      moduleStep += 1;
-      const totalSteps = moduloAtual.steps || 4;
-      if (moduleStep >= totalSteps) {
-        moduleIndex += 1;
-        moduleStep = 0;
-
-        if (moduleIndex >= trilha.length) {
-          moduleIndex = trilha.length - 1;
-        }
-      }
-
-      aluno.moduleIndex = moduleIndex;
-      aluno.moduleStep = moduleStep;
-
-      // Guardar resposta do Kito na memória
-      aluno.history.push({ role: "assistant", content: respostaKito });
-
-      // delay para parecer mais humano
-      await sleep(1200);
-      await enviarMensagemWhatsApp(numeroAluno, respostaKito);
-    }
-
-    students[numeroAluno] = aluno;
+    // Se tiver texto (mensagem normal ou áudio + legenda), trata como texto
+    await processarMensagemAluno({
+      numeroAluno,
+      texto,
+      profileName,
+      isAudio: false
+    });
 
     res.status(200).send("ok");
   } catch (erro) {
@@ -769,10 +861,10 @@ app.get("/admin/stats", (req, res) => {
 
 // Rota de teste
 app.get("/", (req, res) => {
-  res.send("Servidor Kito (Jovika Academy, Z-API + memória + módulos) está a correr ✅");
+  res.send("Servidor Kito (Jovika Academy, Z-API + memória + módulos + áudio) está a correr ✅");
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard) a correr em http://localhost:${PORT}`);
+  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard + áudio) a correr em http://localhost:${PORT}`);
 });

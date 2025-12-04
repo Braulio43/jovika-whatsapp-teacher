@@ -1,4 +1,6 @@
-// server.js - Kito, professor da Jovika Academy (Z-API + memória + módulos + Dashboard + ÁUDIO + FIREBASE)
+// server.js - Kito, professor da Jovika Academy
+// Z-API + memória + módulos + Dashboard + ÁUDIO + Firestore
+
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
@@ -8,7 +10,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { db } from "./firebaseAdmin.js"; // 🔥 Firestore
+import { db } from "./firebaseAdmin.js"; // Firestore
+console.log("🔥🔥🔥 VERSAO NOVA DO KITO CARREGADA 🔥🔥🔥");
+
+
 
 dotenv.config();
 
@@ -18,7 +23,7 @@ const PORT = process.env.PORT || 3000;
 // Para receber JSON da Z-API
 app.use(bodyParser.json());
 
-// "Base de dados" em memória (cache) + Firestore
+// "Base de dados" simples em memória (cache)
 /*
 students[phone] = {
   nome: string | null,
@@ -35,15 +40,13 @@ students[phone] = {
   ]
 }
 */
-const students = {}; // cache local
+const students = {};
 
-// Guarda IDs de mensagens já processadas para evitar respostas duplicadas
+// IDs de mensagens já processadas
 const processedMessages = new Set();
-
-// Guarda último "momment" por número para evitar duplicados do mesmo evento
+// último "momment" por número
 const lastMomentByPhone = {};
-
-// Guarda último texto recente por número para ignorar duplicados em poucos segundos
+// último texto recente por número
 const lastTextByPhone = {};
 
 /** ---------- Trilhas de ensino (módulos estruturados) ---------- **/
@@ -55,22 +58,22 @@ const learningPath = {
       title: "Cumprimentos e apresentações",
       level: "A0",
       steps: 4,
-      goal: "Aprender a dizer olá, despedir-se e apresentar-se de forma simples."
+      goal: "Aprender a dizer olá, despedir-se e apresentar-se de forma simples.",
     },
     {
       id: "en_a0_2",
       title: "Falar sobre idade, cidade e país",
       level: "A0",
       steps: 4,
-      goal: "Conseguir dizer a idade, de onde é e onde vive."
+      goal: "Conseguir dizer a idade, de onde é e onde vive.",
     },
     {
       id: "en_a0_3",
       title: "Rotina diária simples",
       level: "A1",
       steps: 4,
-      goal: "Descrever a rotina do dia a dia com frases básicas no presente simples."
-    }
+      goal: "Descrever a rotina do dia a dia com frases básicas no presente simples.",
+    },
   ],
   frances: [
     {
@@ -78,23 +81,23 @@ const learningPath = {
       title: "Cumprimentos básicos em francês",
       level: "A0",
       steps: 4,
-      goal: "Cumprimentar, despedir-se e dizer como está em francês."
+      goal: "Cumprimentar, despedir-se e dizer como está em francês.",
     },
     {
       id: "fr_a0_2",
       title: "Apresentar-se em francês",
       level: "A0",
       steps: 4,
-      goal: "Dizer o nome, idade e país em francês."
+      goal: "Dizer o nome, idade e país em francês.",
     },
     {
       id: "fr_a0_3",
       title: "Rotina simples em francês",
       level: "A1",
       steps: 4,
-      goal: "Descrever o dia a dia com verbos básicos em francês."
-    }
-  ]
+      goal: "Descrever o dia a dia com verbos básicos em francês.",
+    },
+  ],
 };
 
 /** ---------- Helpers ---------- **/
@@ -128,73 +131,70 @@ function sleep(ms) {
 // Detecta respostas tipo "sim", "bora", "vamos", "quero"
 function isConfirmMessage(texto = "") {
   const t = normalizarTexto(texto);
-  const palavras = ["sim", "bora", "vamos", "quero", "claro", "ok", "tá bem", "esta bem", "ta bem"];
+  const palavras = [
+    "sim",
+    "bora",
+    "vamos",
+    "quero",
+    "claro",
+    "ok",
+    "tá bem",
+    "esta bem",
+    "ta bem",
+  ];
   return palavras.some((p) => t === p || t.includes(p));
 }
 
 function formatDate(d) {
   if (!d) return "-";
   try {
-    if (d.toDate) return d.toDate().toLocaleString("pt-PT");
     return new Date(d).toLocaleString("pt-PT");
   } catch {
     return String(d);
   }
 }
 
-/** ---------- FIREBASE HELPERS (load/save aluno) ---------- **/
-
-async function loadStudentFromFirestore(phone) {
-  // 1º tenta cache
-  if (students[phone]) return students[phone];
-
-  try {
-    const docRef = db.collection("students").doc(phone);
-    const snap = await docRef.get();
-    if (!snap.exists) return null;
-    const data = snap.data();
-
-    const aluno = {
-      stage: data.stage || "ask_name",
-      nome: data.nome || null,
-      idioma: data.idioma || null,
-      nivel: data.nivel || "A0",
-      messagesCount: data.messagesCount || 0,
-      createdAt: data.createdAt || new Date(),
-      lastMessageAt: data.lastMessageAt || new Date(),
-      moduleIndex: data.moduleIndex ?? 0,
-      moduleStep: data.moduleStep ?? 0,
-      history: Array.isArray(data.history) ? data.history : []
-    };
-
-    students[phone] = aluno;
-    return aluno;
-  } catch (err) {
-    console.error("❌ Erro ao carregar aluno do Firestore:", err.message || err);
-    return null;
-  }
-}
+/** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
   try {
-    const dataToSave = {
-      ...aluno,
-      createdAt: aluno.createdAt || new Date(),
-      lastMessageAt: aluno.lastMessageAt || new Date(),
-      updatedAt: new Date()
-    };
-
-    await db.collection("students").doc(phone).set(dataToSave, { merge: true });
-    students[phone] = aluno; // atualiza cache
+    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+    await docRef.set(
+      {
+        nome: aluno.nome ?? null,
+        idioma: aluno.idioma ?? null,
+        nivel: aluno.nivel ?? null,
+        stage: aluno.stage ?? null,
+        messagesCount: aluno.messagesCount ?? 0,
+        moduleIndex: aluno.moduleIndex ?? 0,
+        moduleStep: aluno.moduleStep ?? 0,
+        createdAt: aluno.createdAt ?? new Date(),
+        lastMessageAt: aluno.lastMessageAt ?? new Date(),
+        updatedAt: new Date(),
+      },
+      { merge: true }
+    );
   } catch (err) {
-    console.error("❌ Erro ao guardar aluno no Firestore:", err.message || err);
+    console.error("❌ Erro ao salvar aluno no Firestore:", err.message);
+  }
+}
+
+async function loadStudentFromFirestore(phone) {
+  try {
+    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+    const snap = await docRef.get();
+    if (!snap.exists) return null;
+    return snap.data();
+  } catch (err) {
+    console.error("❌ Erro ao carregar aluno do Firestore:", err.message);
+    return null;
   }
 }
 
 /** ---------- OpenAI (Kito, professor da Jovika) ---------- **/
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 async function gerarRespostaKito(aluno, moduloAtual) {
@@ -292,13 +292,12 @@ falar o idioma, não só decorar regras.
 
   const mensagens = [
     { role: "system", content: systemPrompt },
-    // usa só as últimas 10 interações do aluno para manter custo baixo
-    ...history.slice(-10)
+    ...history.slice(-10),
   ];
 
   const resposta = await openai.responses.create({
     model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
-    input: mensagens
+    input: mensagens,
   });
 
   const textoGerado = resposta.output[0].content[0].text;
@@ -327,7 +326,7 @@ async function transcreverAudio(audioUrl) {
     const transcription = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
       file: fs.createReadStream(tempPath),
-      language: "pt"
+      language: "pt",
     });
 
     fs.promises.unlink(tempPath).catch(() => {});
@@ -343,7 +342,32 @@ async function transcreverAudio(audioUrl) {
   }
 }
 
-/** ---------- Enviar mensagem pela Z-API ---------- **/
+/** ---------- ÁUDIO: TTS (responder com áudio) ---------- **/
+
+async function gerarAudioRespostaKito(texto) {
+  try {
+    console.log("🎙️ Gerando áudio de resposta do Kito...");
+    const speech = await openai.audio.speech.create({
+      model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
+      voice: process.env.OPENAI_TTS_VOICE || "alloy",
+      input: texto,
+      response_format: "mp3",
+    });
+
+    const buffer = Buffer.from(await speech.arrayBuffer());
+    const base64 = buffer.toString("base64");
+    const dataUrl = `data:audio/mpeg;base64,${base64}`;
+    return dataUrl;
+  } catch (err) {
+    console.error(
+      "❌ Erro ao gerar áudio de resposta:",
+      err.response?.data || err.message
+    );
+    return null;
+  }
+}
+
+/** ---------- Enviar mensagem pela Z-API (texto) ---------- **/
 
 async function enviarMensagemWhatsApp(phone, message) {
   try {
@@ -352,7 +376,9 @@ async function enviarMensagemWhatsApp(phone, message) {
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
     if (!instanceId || !instanceToken) {
-      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env");
+      console.error(
+        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env"
+      );
       return;
     }
 
@@ -375,13 +401,70 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
+/** ---------- Enviar ÁUDIO pela Z-API ---------- **/
+
+async function enviarAudioWhatsApp(phone, audioBase64) {
+  try {
+    const instanceId = process.env.ZAPI_INSTANCE_ID;
+    const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+    const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+
+    if (!instanceId || !instanceToken) {
+      console.error(
+        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)"
+      );
+      return;
+    }
+
+    const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
+
+    const payload = {
+      phone,
+      audio: audioBase64, // "data:audio/mpeg;base64,AAAA..."
+      viewOnce: false,
+      waveform: true,
+    };
+
+    const headers = { "Content-Type": "application/json" };
+    if (clientToken) headers["Client-Token"] = clientToken;
+
+    const resp = await axios.post(url, payload, { headers });
+    console.log("📤 Áudio enviado via Z-API para", phone, "resp:", resp.data);
+  } catch (err) {
+    console.error(
+      "❌ Erro ao enviar áudio via Z-API:",
+      err.response?.data || err.message
+    );
+  }
+}
+
 /** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
 
-async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
-  let aluno = await loadStudentFromFirestore(numeroAluno);
+async function processarMensagemAluno({
+  numeroAluno,
+  texto,
+  profileName,
+  isAudio,
+}) {
+  let aluno = students[numeroAluno];
   const agora = new Date();
 
-  // Novo aluno
+  // Se não está em memória, tenta buscar do Firestore
+  if (!aluno) {
+    const fromDb = await loadStudentFromFirestore(numeroAluno);
+    if (fromDb) {
+      aluno = {
+        ...fromDb,
+        createdAt: fromDb.createdAt ? new Date(fromDb.createdAt) : new Date(),
+        lastMessageAt: fromDb.lastMessageAt
+          ? new Date(fromDb.lastMessageAt)
+          : new Date(),
+        history: [],
+      };
+      students[numeroAluno] = aluno;
+    }
+  }
+
   if (!aluno) {
     aluno = {
       stage: "ask_name",
@@ -393,8 +476,9 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       lastMessageAt: agora,
       moduleIndex: 0,
       moduleStep: 0,
-      history: []
+      history: [],
     };
+    students[numeroAluno] = aluno;
 
     const primeiroNome = extrairNome(profileName) || "Aluno";
 
@@ -407,7 +491,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Atualiza stats
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
@@ -415,7 +498,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
 
-  // 1) Perguntar / guardar nome
   if (aluno.stage === "ask_name" && !aluno.nome) {
     const nome = extrairNome(texto) || "Aluno";
     aluno.nome = nome;
@@ -425,10 +507,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       numeroAluno,
       `Fechou, ${nome}! 😄 Agora diz-me: queres começar por inglês, francês ou os dois?`
     );
-  }
-
-  // 2) Perguntar idioma (apenas uma vez)
-  else if (aluno.stage === "ask_language") {
+  } else if (aluno.stage === "ask_language") {
     const idioma = detectarIdioma(texto);
 
     if (!idioma) {
@@ -456,16 +535,12 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
           `Primeiro, diz-me qual é o teu objetivo com esse idioma (ex: trabalho, viagem, confiança, faculdade, sair do país...).`
       );
     }
-  }
-
-  // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
-  else {
+  } else {
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
     }
 
-    const idiomaChave =
-      aluno.idioma === "frances" ? "frances" : "ingles";
+    const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
 
     const trilha = learningPath[idiomaChave] || learningPath["ingles"];
     let moduleIndex = aluno.moduleIndex ?? 0;
@@ -500,10 +575,18 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
     aluno.history.push({ role: "assistant", content: respostaKito });
 
+    // 🔊 gerar áudio da resposta do Kito e enviar pelo WhatsApp
+    const audioBase64 = await gerarAudioRespostaKito(respostaKito);
+    if (audioBase64) {
+      await enviarAudioWhatsApp(numeroAluno, audioBase64);
+    }
+
+    // Também envia o texto, para o aluno poder ler
     await sleep(1200);
     await enviarMensagemWhatsApp(numeroAluno, respostaKito);
   }
 
+  students[numeroAluno] = aluno;
   await saveStudentToFirestore(numeroAluno, aluno);
 }
 
@@ -520,8 +603,23 @@ app.post("/zapi-webhook", async (req, res) => {
 
     const msgId = data.messageId;
     const numeroAluno = data.phone;
-    const momentVal = data.momment; // timestamp da Z-API
+    const momentVal = data.momment;
     const texto = data.text?.message || null;
+
+    // 👉 AQUI: melhorar captura do áudio
+    let audioUrl =
+      data.audioUrl || // alguns formatos podem vir aqui
+      data.audio?.url ||
+      data.media?.url ||
+      data.voice?.url ||
+      data.audio?.audioUrl || // <-- o teu caso: dentro de "audio.audioUrl"
+      null;
+
+    console.log("DEBUG_AUDIO_URL:", {
+      hasText: !!texto,
+      audioUrl,
+      audio: data.audio,
+    });
 
     // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
@@ -530,7 +628,7 @@ app.post("/zapi-webhook", async (req, res) => {
     }
     processedMessages.add(msgId);
 
-    // 2ª defesa: mesmo momment para o mesmo número
+    // 2ª defesa: mesmo momment
     if (momentVal && lastMomentByPhone[numeroAluno] === momentVal) {
       console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
       return res.status(200).send("duplicate_moment_ignored");
@@ -539,15 +637,10 @@ app.post("/zapi-webhook", async (req, res) => {
       lastMomentByPhone[numeroAluno] = momentVal;
     }
 
-    // 3ª defesa: mesmo texto em poucos segundos para o mesmo número
+    // 3ª defesa: mesmo texto em <3s
     const agora = Date.now();
     const ultimo = lastTextByPhone[numeroAluno];
-    if (
-      texto &&
-      ultimo &&
-      ultimo.text === texto &&
-      agora - ultimo.time < 3000 // 3 segundos
-    ) {
+    if (texto && ultimo && ultimo.text === texto && agora - ultimo.time < 3000) {
       console.log(
         "⚠️ Mensagem duplicada ignorada (texto + tempo):",
         msgId,
@@ -560,14 +653,6 @@ app.post("/zapi-webhook", async (req, res) => {
     }
 
     const profileName = data.senderName || data.chatName || "Aluno";
-
-    // ⚠️ Ajustar se a Z-API enviar o áudio noutro campo
-    const audioUrl =
-      data.audioUrl ||
-      data.audio?.url ||
-      data.media?.url ||
-      data.voice?.url ||
-      null;
 
     if (!texto && !audioUrl) {
       console.log("📭 Mensagem sem texto nem áudio processável.");
@@ -590,7 +675,7 @@ app.post("/zapi-webhook", async (req, res) => {
         numeroAluno,
         texto: transcricao,
         profileName,
-        isAudio: true
+        isAudio: true,
       });
 
       return res.status(200).send("ok_audio");
@@ -600,7 +685,7 @@ app.post("/zapi-webhook", async (req, res) => {
       numeroAluno,
       texto,
       profileName,
-      isAudio: false
+      isAudio: false,
     });
 
     res.status(200).send("ok");
@@ -615,44 +700,38 @@ app.post("/zapi-webhook", async (req, res) => {
 
 /** ---------- DASHBOARD HTML (/admin/dashboard) ---------- **/
 
-app.get("/admin/dashboard", async (req, res) => {
+app.get("/admin/dashboard", (req, res) => {
   const token = req.query.token;
   if (!token || token !== process.env.ADMIN_TOKEN) {
     return res.status(401).send("Não autorizado");
   }
 
-  try {
-    const snapshot = await db.collection("students").get();
-    const alunos = snapshot.docs.map((doc) => {
-      const dados = doc.data();
-      return {
-        numero: doc.id,
-        nome: dados.nome || "-",
-        idioma: dados.idioma || "-",
-        nivel: dados.nivel || "-",
-        mensagens: dados.messagesCount || 0,
-        stage: dados.stage || "ask_name",
-        moduleIndex: dados.moduleIndex ?? 0,
-        moduleStep: dados.moduleStep ?? 0,
-        createdAt: dados.createdAt,
-        lastMessageAt: dados.lastMessageAt
-      };
-    });
+  const alunos = Object.entries(students).map(([numero, dados]) => ({
+    numero,
+    nome: dados.nome || "-",
+    idioma: dados.idioma || "-",
+    nivel: dados.nivel || "-",
+    mensagens: dados.messagesCount || 0,
+    stage: dados.stage,
+    moduleIndex: dados.moduleIndex ?? 0,
+    moduleStep: dados.moduleStep ?? 0,
+    createdAt: dados.createdAt,
+    lastMessageAt: dados.lastMessageAt,
+  }));
 
-    const total = alunos.length;
-    const ingles = alunos.filter((a) => a.idioma === "ingles").length;
-    const frances = alunos.filter((a) => a.idioma === "frances").length;
-    const ambos = alunos.filter((a) => a.idioma === "ambos").length;
+  const total = alunos.length;
+  const ingles = alunos.filter((a) => a.idioma === "ingles").length;
+  const frances = alunos.filter((a) => a.idioma === "frances").length;
+  const ambos = alunos.filter((a) => a.idioma === "ambos").length;
 
-    const agora = new Date();
-    const ativos24h = alunos.filter((a) => {
-      if (!a.lastMessageAt) return false;
-      const d = a.lastMessageAt.toDate ? a.lastMessageAt.toDate() : new Date(a.lastMessageAt);
-      const diff = agora - d;
-      return diff <= 24 * 60 * 60 * 1000;
-    }).length;
+  const agora = new Date();
+  const ativos24h = alunos.filter((a) => {
+    if (!a.lastMessageAt) return false;
+    const diff = agora - new Date(a.lastMessageAt);
+    return diff <= 24 * 60 * 60 * 1000;
+  }).length;
 
-    const html = `
+  const html = `
 <!DOCTYPE html>
 <html lang="pt">
 <head>
@@ -826,9 +905,10 @@ app.get("/admin/dashboard", async (req, res) => {
     </div>
     <div class="card">
       <div class="card-title">Mensagens totais (soma)</div>
-      <div class="card-value">${
-        alunos.reduce((sum, a) => sum + (a.mensagens || 0), 0)
-      }</div>
+      <div class="card-value">${alunos.reduce(
+        (sum, a) => sum + (a.mensagens || 0),
+        0
+      )}</div>
       <div class="card-sub">Total de mensagens recebidas de todos os alunos</div>
     </div>
   </div>
@@ -885,68 +965,60 @@ app.get("/admin/dashboard", async (req, res) => {
   </div>
 
   <div class="footer">
-    Endpoint JSON também disponível em <code>/admin/stats?token=${process.env.ADMIN_TOKEN ||
-      "TOKEN"}</code> · Jovika Academy · Professor Kito · ${new Date().getFullYear()}
+    Endpoint JSON também disponível em <code>/admin/stats?token=${
+      process.env.ADMIN_TOKEN || "TOKEN"
+    }</code> · Jovika Academy · Professor Kito · ${new Date().getFullYear()}
   </div>
 </body>
 </html>
-    `;
+  `;
 
-    res.send(html);
-  } catch (err) {
-    console.error("❌ Erro ao carregar dashboard:", err.message || err);
-    res.status(500).send("Erro ao carregar dashboard");
-  }
+  res.send(html);
 });
 
 /** ---------- /admin/stats (JSON para integrações futuras) ---------- **/
 
-app.get("/admin/stats", async (req, res) => {
+app.get("/admin/stats", (req, res) => {
   const token = req.query.token;
   if (!token || token !== process.env.ADMIN_TOKEN) {
     return res.status(401).send("Não autorizado");
   }
 
-  try {
-    const snapshot = await db.collection("students").get();
-    const alunos = snapshot.docs.map((doc) => {
-      const dados = doc.data();
-      return {
-        numero: doc.id,
-        nome: dados.nome,
-        idioma: dados.idioma,
-        nivel: dados.nivel,
-        mensagens: dados.messagesCount || 0,
-        stage: dados.stage,
-        moduleIndex: dados.moduleIndex ?? 0,
-        moduleStep: dados.moduleStep ?? 0,
-        createdAt: dados.createdAt,
-        lastMessageAt: dados.lastMessageAt
-      };
-    });
+  const alunos = Object.entries(students).map(([numero, dados]) => ({
+    numero,
+    nome: dados.nome,
+    idioma: dados.idioma,
+    nivel: dados.nivel,
+    mensagens: dados.messagesCount || 0,
+    stage: dados.stage,
+    moduleIndex: dados.moduleIndex ?? 0,
+    moduleStep: dados.moduleStep ?? 0,
+    createdAt: dados.createdAt,
+    lastMessageAt: dados.lastMessageAt,
+  }));
 
-    const total = alunos.length;
-    const ingles = alunos.filter((a) => a.idioma === "ingles").length;
-    const frances = alunos.filter((a) => a.idioma === "frances").length;
-    const ambos = alunos.filter((a) => a.idioma === "ambos").length;
+  const total = alunos.length;
+  const ingles = alunos.filter((a) => a.idioma === "ingles").length;
+  const frances = alunos.filter((a) => a.idioma === "frances").length;
+  const ambos = alunos.filter((a) => a.idioma === "ambos").length;
 
-    res.json({
-      totalAlunos: total,
-      porIdioma: { ingles, frances, ambos },
-      alunos
-    });
-  } catch (err) {
-    console.error("❌ Erro em /admin/stats:", err.message || err);
-    res.status(500).json({ error: "Erro ao carregar stats" });
-  }
+  res.json({
+    totalAlunos: total,
+    porIdioma: { ingles, frances, ambos },
+    alunos,
+  });
 });
 
 // Rota de teste
 app.get("/", (req, res) => {
-  res.send("Servidor Kito (Jovika Academy, Z-API + memória + módulos + áudio + Firebase) está a correr ✅");
+  res.send(
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos + áudio) está a correr ✅"
+  );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard + áudio + Firebase) a correr em http://localhost:${PORT}`);
+  console.log(
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard + áudio) a correr em http://localhost:${PORT}`
+  );
 });

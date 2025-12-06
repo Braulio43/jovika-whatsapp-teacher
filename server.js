@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.6 – TEXTO + ÁUDIO SOB PEDIDO (voz masculina PT-BR, lógica de exercício em áudio corrigida) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.7 – TEXTO + ÁUDIO SOB PEDIDO (PT-BR + francês com sotaque de França) 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -322,6 +322,13 @@ PORTUGUÊS DO BRASIL (IMPORTANTE):
 - Usa "você" (não uses "tu") e evita gírias como "pra", "beleza?" ou "bora".
 - Prefere "para", "porque", "tudo bem?", "vamos continuar?", etc.
 - O tom é próximo, simpático e motivador, mas com escrita de professor.
+- Quando escrever frases em francês, faz assim:
+  - primeira linha: só a frase em francês;
+  - linha seguinte: tradução em português do Brasil.
+  Exemplo:
+  "Je suis fatigué."
+  "Eu estou cansado."
+  Evita misturar francês e português na mesma linha.
 
 DADOS DO ALUNO:
 - Nome: ${aluno.nome || "não informado"}
@@ -452,11 +459,12 @@ async function gerarAudioRespostaKito(texto) {
     console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      // Voz masculina por padrão
+      // Voz base masculina
       voice: process.env.OPENAI_TTS_VOICE || "onyx",
+      // 🔴 Aqui pedimos PT-BR + francês padrão de França
       instructions:
         process.env.OPENAI_TTS_INSTRUCTIONS ||
-        "Speak in Brazilian Portuguese with a clear, natural MALE voice, ideal for language learners from Angola, Brazil and Portugal.",
+        "When the text is in Portuguese, speak Brazilian Portuguese with a clear, natural MALE voice. When the text is in French, pronounce it with a standard metropolitan French accent (France), slow and very clear, ideal for language learners.",
       input: texto,
       response_format: "mp3",
     });
@@ -682,7 +690,7 @@ async function processarMensagemAluno({
     }
     moduloAtual = trilha[moduleIndex];
 
-    // Antes de gerar resposta nova, vemos se é pedido específico de EXERCÍCIO EM ÁUDIO
+    // Pedido específico de EXERCÍCIO EM ÁUDIO
     const querAudio = userQuerAudio(texto, isAudio);
     const textoNorm = normalizarTexto(texto || "");
     const pediuExercicioEmAudio =
@@ -700,8 +708,7 @@ async function processarMensagemAluno({
     });
 
     if (pediuExercicioEmAudio) {
-      // 🔁 Caso especial: "envia o exercício em áudio"
-      // Procuramos a última mensagem do professor (assistant) — normalmente é o exercício em texto
+      // Caso especial: "envia o exercício em áudio"
       const lastAssistant =
         [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
         null;
@@ -721,10 +728,8 @@ async function processarMensagemAluno({
       aluno.history.push({ role: "assistant", content: msgConfirm });
       await sleep(800);
       await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
-
-      // Não avançamos módulo/step aqui, porque só mudamos o formato (texto → áudio)
     } else {
-      // 🌱 Fluxo normal: gerar nova resposta do Kito
+      // Fluxo normal
       const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
 
       // Avança micro-passos do módulo
@@ -743,7 +748,7 @@ async function processarMensagemAluno({
 
       aluno.history.push({ role: "assistant", content: respostaKito });
 
-      // ÁUDIO SOB PEDIDO (para explicações, frases, etc.)
+      // ÁUDIO SOB PEDIDO (explicações, frases, etc.)
       if (querAudio) {
         const audioBase64 = await gerarAudioRespostaKito(respostaKito);
         if (audioBase64) {
@@ -751,7 +756,6 @@ async function processarMensagemAluno({
         }
       }
 
-      // Envia SEMPRE o texto para o aluno poder ler
       await sleep(1200);
       await enviarMensagemWhatsApp(numeroAluno, respostaKito);
     }

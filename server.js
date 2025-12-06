@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.7 – TEXTO + ÁUDIO SOB PEDIDO (PT-BR + francês com sotaque de França) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.8 – TEXTO + ÁUDIO SOB PEDIDO (voz masculina fixa, inglês/francês limpos) 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -217,6 +217,84 @@ function limparTextoResposta(txt = "") {
   return r;
 }
 
+/**
+ * Extrai apenas as linhas do idioma alvo para o áudio
+ * - inglês: linhas que parecem frases em inglês
+ * - francês: linhas que parecem frases em francês
+ * Se não encontrar nada, devolve o texto original.
+ */
+function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
+  const linhas = texto
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0);
+
+  if (!idiomaAlvo) return texto;
+
+  if (idiomaAlvo === "frances") {
+    const frAccents = /[àâçéèêëîïôùûüÿœ]/i;
+    const frKeywords = [
+      "je ",
+      "j'",
+      "tu ",
+      "il ",
+      "elle ",
+      "nous ",
+      "vous ",
+      "ils ",
+      "elles ",
+      "bonjour",
+      "bonsoir",
+      "merci",
+      "comment ça va",
+      "comment ca va",
+      "ça va",
+      "ca va",
+    ];
+    const frLines = linhas.filter((l) => {
+      const t = l.toLowerCase();
+      return frAccents.test(l) || frKeywords.some((k) => t.startsWith(k));
+    });
+    if (frLines.length > 0) return frLines.join("\n");
+  }
+
+  if (idiomaAlvo === "ingles") {
+    const hasLatin = /[a-z]/i;
+    const ptAccents = /[áãâàéêíóôõúç]/i;
+    const enKeywords = [
+      "i ",
+      "i'm",
+      "i am",
+      "you ",
+      "you are",
+      "he ",
+      "he is",
+      "she ",
+      "she is",
+      "we ",
+      "we are",
+      "they ",
+      "they are",
+      "hello",
+      "hi ",
+      "good morning",
+      "good evening",
+    ];
+    const enLines = linhas.filter((l) => {
+      const t = l.toLowerCase();
+      return (
+        hasLatin.test(l) &&
+        !ptAccents.test(l) &&
+        enKeywords.some((k) => t.startsWith(k))
+      );
+    });
+    if (enLines.length > 0) return enLines.join("\n");
+  }
+
+  // fallback: devolve tudo se não conseguir separar
+  return texto;
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -328,7 +406,13 @@ PORTUGUÊS DO BRASIL (IMPORTANTE):
   Exemplo:
   "Je suis fatigué."
   "Eu estou cansado."
-  Evita misturar francês e português na mesma linha.
+- Quando escrever frases em inglês, faz assim:
+  - primeira linha: só a frase em inglês;
+  - linha seguinte: tradução em português do Brasil.
+  Exemplo:
+  "I am tired."
+  "Eu estou cansado."
+- Evita misturar francês/inglês e português na mesma linha.
 
 DADOS DO ALUNO:
 - Nome: ${aluno.nome || "não informado"}
@@ -345,12 +429,10 @@ SOBRE ÁUDIO (MUITO IMPORTANTE):
 - **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
 - **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
 - **NÃO** digas "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
-- Quando o aluno pedir para ouvir algo em áudio (por exemplo: pronúncia, frases, explicação, diálogo, etc.):
-  1) Responde normalmente: explica o que ele perguntou (conceito + exemplos +, se fizer sentido, um mini exercício).
+- Quando o aluno pedir para ouvir algo em áudio (pronúncia, frases, explicação, diálogo, etc.):
+  1) Responde normalmente em texto (explicação + exemplos +, se fizer sentido, mini exercício).
   2) No final da mensagem, faz **uma pergunta de preferência**, por exemplo:
      - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
-- Lembra-te: o mesmo texto que escreves também pode ser transformado em áudio. Então evita falar coisas que só fazem sentido em texto, tipo:
-  - "como escrevi acima" ou "como mostrei na mensagem anterior".
 
 COMO O KITO PENSA E AGE:
 - Tu lembras-te do contexto da conversa (histórico) e não repetes perguntas iniciais
@@ -454,17 +536,30 @@ async function transcreverAudio(audioUrl) {
 
 /** ---------- ÁUDIO: TTS (responder com áudio quando o aluno pedir) ---------- **/
 
-async function gerarAudioRespostaKito(texto) {
+async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
     console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
+
+    let instructions;
+
+    if (process.env.OPENAI_TTS_INSTRUCTIONS) {
+      instructions = process.env.OPENAI_TTS_INSTRUCTIONS;
+    } else if (idiomaAlvo === "ingles") {
+      instructions =
+        "Speak in clear, neutral English with a natural MALE voice. Talk slowly and clearly, ideal for beginners. Do NOT switch to Portuguese or French.";
+    } else if (idiomaAlvo === "frances") {
+      instructions =
+        "Parle en français standard de France, avec une voix masculine naturelle. Parle lentement et très clairement, idéal pour les débutants. Ne parle pas portugais ou anglais.";
+    } else {
+      // fallback genérico (PT-BR + FR se aparecer)
+      instructions =
+        "When the text is in Portuguese, speak Brazilian Portuguese with a clear, natural MALE voice. When the text is in French, pronounce it with a standard metropolitan French accent (France), slow and very clear, ideal for language learners.";
+    }
+
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      // Voz base masculina
-      voice: process.env.OPENAI_TTS_VOICE || "onyx",
-      // 🔴 Aqui pedimos PT-BR + francês padrão de França
-      instructions:
-        process.env.OPENAI_TTS_INSTRUCTIONS ||
-        "When the text is in Portuguese, speak Brazilian Portuguese with a clear, natural MALE voice. When the text is in French, pronounce it with a standard metropolitan French accent (France), slow and very clear, ideal for language learners.",
+      voice: process.env.OPENAI_TTS_VOICE || "onyx", // voz fixa
+      instructions,
       input: texto,
       response_format: "mp3",
     });
@@ -690,7 +785,6 @@ async function processarMensagemAluno({
     }
     moduloAtual = trilha[moduleIndex];
 
-    // Pedido específico de EXERCÍCIO EM ÁUDIO
     const querAudio = userQuerAudio(texto, isAudio);
     const textoNorm = normalizarTexto(texto || "");
     const pediuExercicioEmAudio =
@@ -707,17 +801,28 @@ async function processarMensagemAluno({
       pediuExercicioEmAudio,
     });
 
+    // idioma alvo para áudio (o que o aluno está a estudar)
+    const idiomaAudioAlvo =
+      aluno.idioma === "ingles" || aluno.idioma === "frances"
+        ? aluno.idioma
+        : null;
+
     if (pediuExercicioEmAudio) {
       // Caso especial: "envia o exercício em áudio"
       const lastAssistant =
         [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
         null;
 
-      const textoParaAudio =
+      let textoParaAudio =
         lastAssistant?.content ||
         "Vamos praticar este exercício juntos. Escute com atenção e depois me envie suas respostas por mensagem.";
 
-      const audioBase64 = await gerarAudioRespostaKito(textoParaAudio);
+      textoParaAudio = extrairTrechoParaAudio(textoParaAudio, idiomaAudioAlvo);
+
+      const audioBase64 = await gerarAudioRespostaKito(
+        textoParaAudio,
+        idiomaAudioAlvo
+      );
       if (audioBase64) {
         await enviarAudioWhatsApp(numeroAluno, audioBase64);
       }
@@ -748,9 +853,16 @@ async function processarMensagemAluno({
 
       aluno.history.push({ role: "assistant", content: respostaKito });
 
-      // ÁUDIO SOB PEDIDO (explicações, frases, etc.)
+      // ÁUDIO SOB PEDIDO (explicações / frases)
       if (querAudio) {
-        const audioBase64 = await gerarAudioRespostaKito(respostaKito);
+        const textoParaAudio = extrairTrechoParaAudio(
+          respostaKito,
+          idiomaAudioAlvo
+        );
+        const audioBase64 = await gerarAudioRespostaKito(
+          textoParaAudio,
+          idiomaAudioAlvo
+        );
         if (audioBase64) {
           await enviarAudioWhatsApp(numeroAluno, audioBase64);
         }

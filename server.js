@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.2 – TEXTO + ÁUDIO SOB PEDIDO (voz brasileira + sem 'Áudio enviado') 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.3 – TEXTO + ÁUDIO SOB PEDIDO (voz brasileira + sem '(Áudio enviado)') 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -189,7 +189,7 @@ function userQuerAudio(texto = "", isAudio = false) {
   return resultado;
 }
 
-// Limpa coisas que não queremos que apareçam/lêem, tipo "[Áudio enviado]"
+// Limpa coisas que não queremos que apareçam/lêem, tipo "[Áudio enviado]" ou "(Áudio)"
 function limparTextoResposta(txt = "") {
   if (!txt) return "";
   let r = txt;
@@ -199,6 +199,10 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/\[\s*audio enviado\s*\]/gi, "");
   r = r.replace(/áudio enviado/gi, "");
   r = r.replace(/audio enviado/gi, "");
+
+  // remove "(Áudio)" ou "(audio)" em qualquer parte
+  r = r.replace(/\(\s*áudio\s*\)/gi, "");
+  r = r.replace(/\(\s*audio\s*\)/gi, "");
 
   // remove espaços/linhas duplicadas desnecessárias
   r = r.replace(/\n{3,}/g, "\n\n").trim();
@@ -319,7 +323,7 @@ DADOS DO ALUNO:
 SOBRE ÁUDIO (MUITO IMPORTANTE):
 - Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
 - **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
-- **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem frases do tipo "áudio enviado".
+- **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
 - Quando o aluno pedir pronúncia em áudio, faz assim:
   1) Explica por texto (como sempre: conceito + exemplos + mini exercício);
   2) Diz algo simples que faça sentido também em áudio, por exemplo:
@@ -381,7 +385,8 @@ falar o idioma, não só decorar regras.
   });
 
   const textoGerado =
-    resposta.output?.[0]?.content?.[0]?.text || "Desculpa, deu um erro aqui. Tenta de novo 🙏";
+    resposta.output?.[0]?.content?.[0]?.text ||
+    "Desculpa, deu um erro aqui. Tenta de novo 🙏";
   const textoLimpo = limparTextoResposta(textoGerado);
 
   console.log("🧠 Resposta do Kito (bruta):", textoGerado);
@@ -434,7 +439,7 @@ async function gerarAudioRespostaKito(texto) {
     console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "rio", // voz com vibe brasileira
+      voice: process.env.OPENAI_TTS_VOICE || "nova", // voz suportada
       instructions:
         process.env.OPENAI_TTS_INSTRUCTIONS ||
         "Speak in Brazilian Portuguese with a clear, natural accent, ideal for language learners from Angola, Brazil and Portugal.",

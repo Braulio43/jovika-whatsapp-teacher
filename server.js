@@ -12,7 +12,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
-console.log("🔥🔥🔥 KITO v4.1 – TEXTO + ÁUDIO SOB PEDIDO (sem dizer que não pode enviar áudio) 🔥🔥🔥");
+console.log(
+  "🔥🔥🔥 KITO v4.2 – TEXTO + ÁUDIO SOB PEDIDO (voz brasileira + sem 'Áudio enviado') 🔥🔥🔥"
+);
 
 dotenv.config();
 
@@ -187,6 +189,23 @@ function userQuerAudio(texto = "", isAudio = false) {
   return resultado;
 }
 
+// Limpa coisas que não queremos que apareçam/lêem, tipo "[Áudio enviado]"
+function limparTextoResposta(txt = "") {
+  if (!txt) return "";
+  let r = txt;
+
+  // remove [Áudio enviado], [audio enviado], etc.
+  r = r.replace(/\[\s*áudio enviado\s*\]/gi, "");
+  r = r.replace(/\[\s*audio enviado\s*\]/gi, "");
+  r = r.replace(/áudio enviado/gi, "");
+  r = r.replace(/audio enviado/gi, "");
+
+  // remove espaços/linhas duplicadas desnecessárias
+  r = r.replace(/\n{3,}/g, "\n\n").trim();
+
+  return r;
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -300,6 +319,7 @@ DADOS DO ALUNO:
 SOBRE ÁUDIO (MUITO IMPORTANTE):
 - Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
 - **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
+- **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem frases do tipo "áudio enviado".
 - Quando o aluno pedir pronúncia em áudio, faz assim:
   1) Explica por texto (como sempre: conceito + exemplos + mini exercício);
   2) Diz algo simples que faça sentido também em áudio, por exemplo:
@@ -337,13 +357,12 @@ CORREÇÃO DE ERROS:
 - Quando o aluno erra:
   - Mostra a frase original dele
   - Mostra a versão corrigida
-  - Faz uma explicação rápida do porquê (sem excesso de gramática pesada)
-- Mantém o tom positivo. Nada de "está errado", prefere "podemos melhorar assim". 
+  - Faz uma explicação rápida do porquê (sem excesso de gramática pesada) 
 
 TOM EMOCIONAL:
-- Se o aluno demonstra dificuldade, desmotivação ou cansaço, responde de forma
+- Se o aluno demonstrar dificuldade, desmotivação ou cansaço, responde de forma
   mais acolhedora e incentiva a continuar devagar.
-- Se o aluno está empolgado, acompanha essa energia e puxa um pouco mais.
+- Se o aluno estiver empolgado, acompanha essa energia e puxa um pouco mais.
 
 RESUMO:
 Tu és o Kito, uma espécie de "ChatGPT-professor de idiomas" da Jovika Academy:
@@ -361,9 +380,14 @@ falar o idioma, não só decorar regras.
     input: mensagens,
   });
 
-  const textoGerado = resposta.output[0].content[0].text;
-  console.log("🧠 Resposta do Kito:", textoGerado);
-  return textoGerado;
+  const textoGerado =
+    resposta.output?.[0]?.content?.[0]?.text || "Desculpa, deu um erro aqui. Tenta de novo 🙏";
+  const textoLimpo = limparTextoResposta(textoGerado);
+
+  console.log("🧠 Resposta do Kito (bruta):", textoGerado);
+  console.log("🧠 Resposta do Kito (limpa):", textoLimpo);
+
+  return textoLimpo;
 }
 
 /** ---------- ÁUDIO: download + transcrição (para entender o que o aluno falou) ---------- **/
@@ -410,7 +434,10 @@ async function gerarAudioRespostaKito(texto) {
     console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "onyx",
+      voice: process.env.OPENAI_TTS_VOICE || "rio", // voz com vibe brasileira
+      instructions:
+        process.env.OPENAI_TTS_INSTRUCTIONS ||
+        "Speak in Brazilian Portuguese with a clear, natural accent, ideal for language learners from Angola, Brazil and Portugal.",
       input: texto,
       response_format: "mp3",
     });

@@ -12,7 +12,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
-console.log("🔥🔥🔥 KITO v5 – TEXTO + ÁUDIO SOB PEDIDO (sem duplicar) 🔥🔥🔥");
+console.log("🔥🔥🔥 KITO v4 – TEXTO + ÁUDIO SOB PEDIDO 🔥🔥🔥");
 
 dotenv.config();
 
@@ -133,33 +133,13 @@ function formatDate(d) {
   }
 }
 
-// 🔊 Detecta se o aluno está a pedir ÁUDIO (texto ou áudio transcrito)
+// Detecta se o aluno está a pedir ÁUDIO (manda áudio, lê em voz alta, pronúncia, etc.)
 function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
 
   const gatilhos = [
     "manda audio",
     "manda áudio",
-    "manda um audio",
-    "manda um áudio",
-    "envia audio",
-    "envia um audio",
-    "envia um áudio",
-    "envia audio por favor",
-    "envia um audio por favor",
-    "resposta por audio",
-    "resposta em audio",
-    "responde por audio",
-    "responde em audio",
-    "em audio",
-    "em áudio",
-    "por audio",
-    "por áudio",
-    "mensagem de voz",
-    "msg de voz",
-    "manda voz",
-    "fala por audio",
-    "fala por áudio",
     "responde em audio",
     "responde em áudio",
     "fala em audio",
@@ -178,8 +158,6 @@ function userQuerAudio(texto = "", isAudio = false) {
     "fala devagar em francês",
     "pronuncia",
     "pronúncia",
-    "pronunciar",
-    "pronunciação",
   ];
 
   const pediuPorTexto = gatilhos.some((p) => t.includes(p));
@@ -191,11 +169,7 @@ function userQuerAudio(texto = "", isAudio = false) {
       t.includes("corrig") ||
       gatilhos.some((p) => t.includes(p)));
 
-  // Qualquer frase que contenha "audio"/"áudio", mesmo que seja "agradecia que enviasse um áudio"
-  const palavraAudioSolta = t.includes("audio");
-
-  const resultado = pediuPorTexto || pediuPorAudio || palavraAudioSolta;
-  return resultado;
+  return pediuPorTexto || pediuPorAudio;
 }
 
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
@@ -660,24 +634,19 @@ async function processarMensagemAluno({
 
     aluno.history.push({ role: "assistant", content: respostaKito });
 
-    // 🔊 ÁUDIO SOB PEDIDO — se gerar áudio com sucesso, NÃO manda texto
+    // 🔊 ÁUDIO SOB PEDIDO
     const querAudio = userQuerAudio(texto, isAudio);
     console.log("DEBUG_QUER_AUDIO:", { texto, isAudio, querAudio });
-
-    let enviouAudio = false;
     if (querAudio) {
       const audioBase64 = await gerarAudioRespostaKito(respostaKito);
       if (audioBase64) {
         await enviarAudioWhatsApp(numeroAluno, audioBase64);
-        enviouAudio = true;
       }
     }
 
-    // Se NÃO enviou áudio (não pediu, ou TTS falhou), manda texto
-    if (!enviouAudio) {
-      await sleep(1200);
-      await enviarMensagemWhatsApp(numeroAluno, respostaKito);
-    }
+    // Envia SEMPRE o texto para o aluno poder ler
+    await sleep(1200);
+    await enviarMensagemWhatsApp(numeroAluno, respostaKito);
   }
 
   students[numeroAluno] = aluno;

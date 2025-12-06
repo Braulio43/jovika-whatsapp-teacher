@@ -1,5 +1,5 @@
-// server.js - Kito, professor da Jovika Academy
-// Z-API + memória + módulos + Dashboard + Firestore (TEXTO-ONLY, sem TTS)
+// server.js – Kito, professor da Jovika Academy
+// Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -12,7 +12,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
-console.log("🔥🔥🔥 KITO v3 - TEXTO-ONLY (sem TTS) 🔥🔥🔥");
+console.log("🔥🔥🔥 KITO v4 – TEXTO + ÁUDIO SOB PEDIDO 🔥🔥🔥");
 
 dotenv.config();
 
@@ -107,6 +107,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Detecta respostas tipo "sim", "bora", "vamos", "quero"
 function isConfirmMessage(texto = "") {
   const t = normalizarTexto(texto);
   const palavras = [
@@ -132,7 +133,7 @@ function formatDate(d) {
   }
 }
 
-// Mantemos o detector de “quer audio” só para futuro (mas NÃO usamos pra enviar áudio)
+// Detecta se o aluno está a pedir ÁUDIO (manda áudio, lê em voz alta, pronúncia, etc.)
 function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
 
@@ -160,6 +161,7 @@ function userQuerAudio(texto = "", isAudio = false) {
   ];
 
   const pediuPorTexto = gatilhos.some((p) => t.includes(p));
+
   const pediuPorAudio =
     isAudio &&
     (t.includes("pronun") ||
@@ -344,7 +346,7 @@ falar o idioma, não só decorar regras.
   return textoGerado;
 }
 
-/** ---------- ÁUDIO DO ALUNO: download + transcrição (só para ENTENDER, não para responder com áudio) ---------- **/
+/** ---------- ÁUDIO: download + transcrição (para entender o que o aluno falou) ---------- **/
 
 async function downloadToTempFile(fileUrl) {
   const cleanUrl = fileUrl.split("?")[0];
@@ -381,7 +383,32 @@ async function transcreverAudio(audioUrl) {
   }
 }
 
-/** ---------- Enviar mensagem pela Z-API (TEXTO) ---------- **/
+/** ---------- ÁUDIO: TTS (responder com áudio quando o aluno pedir) ---------- **/
+
+async function gerarAudioRespostaKito(texto) {
+  try {
+    console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
+    const speech = await openai.audio.speech.create({
+      model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
+      voice: process.env.OPENAI_TTS_VOICE || "onyx",
+      input: texto,
+      response_format: "mp3",
+    });
+
+    const buffer = Buffer.from(await speech.arrayBuffer());
+    const base64 = buffer.toString("base64");
+    const dataUrl = `data:audio/mpeg;base64,${base64}`;
+    return dataUrl;
+  } catch (err) {
+    console.error(
+      "❌ Erro ao gerar áudio de resposta:",
+      err.response?.data || err.message
+    );
+    return null;
+  }
+}
+
+/** ---------- Enviar mensagem pela Z-API (texto) ---------- **/
 
 async function enviarMensagemWhatsApp(phone, message) {
   try {
@@ -415,7 +442,44 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
-/** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio do aluno) ---------- **/
+/** ---------- Enviar ÁUDIO pela Z-API (sob pedido) ---------- **/
+
+async function enviarAudioWhatsApp(phone, audioBase64) {
+  try {
+    const instanceId = process.env.ZAPI_INSTANCE_ID;
+    const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
+    const clientToken = process.env.ZAPI_CLIENT_TOKEN;
+
+    if (!instanceId || !instanceToken) {
+      console.error(
+        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)"
+      );
+      return;
+    }
+
+    const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
+
+    const payload = {
+      phone,
+      audio: audioBase64, // "data:audio/mpeg;base64,AAAA..."
+      viewOnce: false,
+      waveform: true,
+    };
+
+    const headers = { "Content-Type": "application/json" };
+    if (clientToken) headers["Client-Token"] = clientToken;
+
+    const resp = await axios.post(url, payload, { headers });
+    console.log("📤 Áudio enviado via Z-API para", phone, "resp:", resp.data);
+  } catch (err) {
+    console.error(
+      "❌ Erro ao enviar áudio via Z-API:",
+      err.response?.data || err.message
+    );
+  }
+}
+
+/** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
 
 async function processarMensagemAluno({
   numeroAluno,
@@ -499,9 +563,8 @@ async function processarMensagemAluno({
       numeroAluno,
       `Fechou, ${nome}! 😄 Agora diz-me: queres começar por inglês, francês ou os dois?`
     );
-  }
-  // 2) Perguntar idioma
-  else if (aluno.stage === "ask_language") {
+  } else if (aluno.stage === "ask_language") {
+    // 2) Perguntar idioma (apenas uma vez)
     const idioma = detectarIdioma(texto);
 
     if (!idioma) {
@@ -529,9 +592,8 @@ async function processarMensagemAluno({
           `Primeiro, diz-me qual é o teu objetivo com esse idioma (ex: trabalho, viagem, confiança, faculdade, sair do país...).`
       );
     }
-  }
-  // 3) Fase de aprendizagem
-  else {
+  } else {
+    // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
     }
@@ -556,6 +618,7 @@ async function processarMensagemAluno({
 
     const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
 
+    // Avança micro-passos do módulo
     moduleStep += 1;
     const totalSteps = moduloAtual.steps || 4;
     if (moduleStep >= totalSteps) {
@@ -571,13 +634,17 @@ async function processarMensagemAluno({
 
     aluno.history.push({ role: "assistant", content: respostaKito });
 
+    // 🔊 ÁUDIO SOB PEDIDO
     const querAudio = userQuerAudio(texto, isAudio);
-    console.log("DEBUG_QUER_AUDIO (mas sem enviar áudio):", {
-      texto,
-      isAudio,
-      querAudio,
-    });
+    console.log("DEBUG_QUER_AUDIO:", { texto, isAudio, querAudio });
+    if (querAudio) {
+      const audioBase64 = await gerarAudioRespostaKito(respostaKito);
+      if (audioBase64) {
+        await enviarAudioWhatsApp(numeroAluno, audioBase64);
+      }
+    }
 
+    // Envia SEMPRE o texto para o aluno poder ler
     await sleep(1200);
     await enviarMensagemWhatsApp(numeroAluno, respostaKito);
   }
@@ -616,12 +683,14 @@ app.post("/zapi-webhook", async (req, res) => {
       audio: data.audio,
     });
 
+    // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
       console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
       return res.status(200).send("duplicate_ignored");
     }
     processedMessages.add(msgId);
 
+    // 2ª defesa: mesmo momment
     if (momentVal && lastMomentByPhone[numeroAluno] === momentVal) {
       console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
       return res.status(200).send("duplicate_moment_ignored");
@@ -630,6 +699,7 @@ app.post("/zapi-webhook", async (req, res) => {
       lastMomentByPhone[numeroAluno] = momentVal;
     }
 
+    // 3ª defesa: mesmo texto em <3s
     const agora = Date.now();
     const ultimo = lastTextByPhone[numeroAluno];
     if (texto && ultimo && ultimo.text === texto && agora - ultimo.time < 3000) {
@@ -651,6 +721,7 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("no_text_or_audio");
     }
 
+    // Só áudio → transcreve e trata como texto vindo de áudio
     if (audioUrl && !texto) {
       const transcricao = await transcreverAudio(audioUrl);
 
@@ -673,6 +744,7 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("ok_audio");
     }
 
+    // Mensagem de texto normal
     await processarMensagemAluno({
       numeroAluno,
       texto,
@@ -1004,13 +1076,13 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO-ONLY) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO-ONLY) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO) em http://localhost:${PORT}`
   );
 });

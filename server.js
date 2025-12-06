@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.4 – TEXTO + ÁUDIO SOB PEDIDO (PT-BR correto, sem ‘vou mandar áudio’) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.6 – TEXTO + ÁUDIO SOB PEDIDO (voz masculina PT-BR, lógica de exercício em áudio corrigida) 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -171,6 +171,8 @@ function userQuerAudio(texto = "", isAudio = false) {
     "fala devagar em francês",
     "pronuncia",
     "pronúncia",
+    "áudio",
+    "audio",
   ];
 
   const pediuPorTexto = gatilhos.some((p) => t.includes(p));
@@ -182,10 +184,7 @@ function userQuerAudio(texto = "", isAudio = false) {
       t.includes("corrig") ||
       gatilhos.some((p) => t.includes(p)));
 
-  // palavra "audio" em qualquer contexto (ex: "enviasse um audio, por favor")
-  const palavraAudioSolta = t.includes("audio");
-
-  const resultado = pediuPorTexto || pediuPorAudio || palavraAudioSolta;
+  const resultado = pediuPorTexto || pediuPorAudio;
   return resultado;
 }
 
@@ -204,13 +203,13 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/\(\s*áudio\s*\)/gi, "");
   r = r.replace(/\(\s*audio\s*\)/gi, "");
 
-  // remove frases do tipo "vou mandar/enviar um áudio ..."
-  r = r.replace(/.*vou mandar um áudio.*(\r?\n)?/gi, "");
-  r = r.replace(/.*vou te mandar um áudio.*(\r?\n)?/gi, "");
-  r = r.replace(/.*vou enviar um áudio.*(\r?\n)?/gi, "");
-  r = r.replace(/.*vou te enviar um áudio.*(\r?\n)?/gi, "");
-  r = r.replace(/.*agora mando um áudio.*(\r?\n)?/gi, "");
-  r = r.replace(/.*agora vou.*áudio.*(\r?\n)?/gi, "");
+  // remove qualquer frase que fale "vou ... áudio" ou "mandar ... áudio" ou "enviar ... áudio"
+  r = r.replace(/.*vou .*áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*vou .*audio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*mandar .*áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*mandar .*audio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*enviar .*áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*enviar .*audio.*(\r?\n)?/gi, "");
 
   // remove espaços/linhas duplicadas desnecessárias
   r = r.replace(/\n{3,}/g, "\n\n").trim();
@@ -339,7 +338,7 @@ SOBRE ÁUDIO (MUITO IMPORTANTE):
 - **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
 - **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
 - **NÃO** digas "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
-- Quando o aluno pedir pronúncia em áudio:
+- Quando o aluno pedir para ouvir algo em áudio (por exemplo: pronúncia, frases, explicação, diálogo, etc.):
   1) Responde normalmente: explica o que ele perguntou (conceito + exemplos +, se fizer sentido, um mini exercício).
   2) No final da mensagem, faz **uma pergunta de preferência**, por exemplo:
      - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
@@ -453,10 +452,11 @@ async function gerarAudioRespostaKito(texto) {
     console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "nova", // voz suportada
+      // Voz masculina por padrão
+      voice: process.env.OPENAI_TTS_VOICE || "onyx",
       instructions:
         process.env.OPENAI_TTS_INSTRUCTIONS ||
-        "Speak in Brazilian Portuguese with a clear, natural accent, ideal for language learners from Angola, Brazil and Portugal.",
+        "Speak in Brazilian Portuguese with a clear, natural MALE voice, ideal for language learners from Angola, Brazil and Portugal.",
       input: texto,
       response_format: "mp3",
     });
@@ -682,37 +682,79 @@ async function processarMensagemAluno({
     }
     moduloAtual = trilha[moduleIndex];
 
-    const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
-
-    // Avança micro-passos do módulo
-    moduleStep += 1;
-    const totalSteps = moduloAtual.steps || 4;
-    if (moduleStep >= totalSteps) {
-      moduleIndex += 1;
-      moduleStep = 0;
-      if (moduleIndex >= trilha.length) {
-        moduleIndex = trilha.length - 1;
-      }
-    }
-
-    aluno.moduleIndex = moduleIndex;
-    aluno.moduleStep = moduleStep;
-
-    aluno.history.push({ role: "assistant", content: respostaKito });
-
-    // 🔊 ÁUDIO SOB PEDIDO
+    // Antes de gerar resposta nova, vemos se é pedido específico de EXERCÍCIO EM ÁUDIO
     const querAudio = userQuerAudio(texto, isAudio);
-    console.log("DEBUG_QUER_AUDIO:", { texto, isAudio, querAudio });
-    if (querAudio) {
-      const audioBase64 = await gerarAudioRespostaKito(respostaKito);
+    const textoNorm = normalizarTexto(texto || "");
+    const pediuExercicioEmAudio =
+      querAudio &&
+      (textoNorm.includes("exercicio") ||
+        textoNorm.includes("exercício") ||
+        textoNorm.includes("exercicios") ||
+        textoNorm.includes("exercícios"));
+
+    console.log("DEBUG_QUER_AUDIO:", {
+      texto,
+      isAudio,
+      querAudio,
+      pediuExercicioEmAudio,
+    });
+
+    if (pediuExercicioEmAudio) {
+      // 🔁 Caso especial: "envia o exercício em áudio"
+      // Procuramos a última mensagem do professor (assistant) — normalmente é o exercício em texto
+      const lastAssistant =
+        [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
+        null;
+
+      const textoParaAudio =
+        lastAssistant?.content ||
+        "Vamos praticar este exercício juntos. Escute com atenção e depois me envie suas respostas por mensagem.";
+
+      const audioBase64 = await gerarAudioRespostaKito(textoParaAudio);
       if (audioBase64) {
         await enviarAudioWhatsApp(numeroAluno, audioBase64);
       }
-    }
 
-    // Envia SEMPRE o texto para o aluno poder ler
-    await sleep(1200);
-    await enviarMensagemWhatsApp(numeroAluno, respostaKito);
+      const msgConfirm =
+        "Pronto! Enviei o exercício em áudio para você ouvir e praticar. Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
+
+      aluno.history.push({ role: "assistant", content: msgConfirm });
+      await sleep(800);
+      await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
+
+      // Não avançamos módulo/step aqui, porque só mudamos o formato (texto → áudio)
+    } else {
+      // 🌱 Fluxo normal: gerar nova resposta do Kito
+      const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
+
+      // Avança micro-passos do módulo
+      moduleStep += 1;
+      const totalSteps = moduloAtual.steps || 4;
+      if (moduleStep >= totalSteps) {
+        moduleIndex += 1;
+        moduleStep = 0;
+        if (moduleIndex >= trilha.length) {
+          moduleIndex = trilha.length - 1;
+        }
+      }
+
+      aluno.moduleIndex = moduleIndex;
+      aluno.moduleStep = moduleStep;
+
+      aluno.history.push({ role: "assistant", content: respostaKito });
+
+      // ÁUDIO SOB PEDIDO (para explicações, frases, etc.)
+      if (querAudio) {
+        const audioBase64 = await gerarAudioRespostaKito(respostaKito);
+        if (audioBase64) {
+          await enviarAudioWhatsApp(numeroAluno, audioBase64);
+        }
+      }
+
+      // Envia SEMPRE o texto para o aluno poder ler
+      await sleep(1200);
+      await enviarMensagemWhatsApp(numeroAluno, respostaKito);
+    }
   }
 
   students[numeroAluno] = aluno;

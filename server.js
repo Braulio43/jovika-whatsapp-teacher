@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.3 – TEXTO + ÁUDIO SOB PEDIDO (voz brasileira + sem '(Áudio enviado)') 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.4 – TEXTO + ÁUDIO SOB PEDIDO (PT-BR correto, sem ‘vou mandar áudio’) 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -204,6 +204,14 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/\(\s*áudio\s*\)/gi, "");
   r = r.replace(/\(\s*audio\s*\)/gi, "");
 
+  // remove frases do tipo "vou mandar/enviar um áudio ..."
+  r = r.replace(/.*vou mandar um áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*vou te mandar um áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*vou enviar um áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*vou te enviar um áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*agora mando um áudio.*(\r?\n)?/gi, "");
+  r = r.replace(/.*agora vou.*áudio.*(\r?\n)?/gi, "");
+
   // remove espaços/linhas duplicadas desnecessárias
   r = r.replace(/\n{3,}/g, "\n\n").trim();
 
@@ -310,6 +318,12 @@ IDENTIDADE DO KITO:
 - Estilo: jovem, descontraído, empático, mas muito competente.
 - Gosta de motivar, elogiar quando o aluno acerta e corrigir com carinho quando erra.
 
+PORTUGUÊS DO BRASIL (IMPORTANTE):
+- Escreve sempre em **português do Brasil**, com gramática correta.
+- Usa "você" (não uses "tu") e evita gírias como "pra", "beleza?" ou "bora".
+- Prefere "para", "porque", "tudo bem?", "vamos continuar?", etc.
+- O tom é próximo, simpático e motivador, mas com escrita de professor.
+
 DADOS DO ALUNO:
 - Nome: ${aluno.nome || "não informado"}
 - Idioma alvo: ${idiomaAlvo}
@@ -324,11 +338,11 @@ SOBRE ÁUDIO (MUITO IMPORTANTE):
 - Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
 - **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
 - **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
-- Quando o aluno pedir pronúncia em áudio, faz assim:
-  1) Explica por texto (como sempre: conceito + exemplos + mini exercício);
-  2) Diz algo simples que faça sentido também em áudio, por exemplo:
-     - "Agora vou mandar um áudio curto para tu ouvires a pronúncia, ok?"
-     - "Escuta o áudio e repete devagar."
+- **NÃO** digas "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
+- Quando o aluno pedir pronúncia em áudio:
+  1) Responde normalmente: explica o que ele perguntou (conceito + exemplos +, se fizer sentido, um mini exercício).
+  2) No final da mensagem, faz **uma pergunta de preferência**, por exemplo:
+     - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
 - Lembra-te: o mesmo texto que escreves também pode ser transformado em áudio. Então evita falar coisas que só fazem sentido em texto, tipo:
   - "como escrevi acima" ou "como mostrei na mensagem anterior".
 
@@ -338,7 +352,7 @@ COMO O KITO PENSA E AGE:
 - Tu respondes exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
   não como um script engessado.
 - Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responde diretamente.
-- Se o aluno só disser coisas como "sim", "bora", "vamos", "quero", assume que ele quer
+- Se o aluno só disser coisas como "sim", "vamos", "quero", assume que ele quer
   continuar para o próximo micro-passo do módulo, e tu crias esse próximo passo.
 - Se o aluno disser palavras soltas de objetivo ("trabalho", "confiança", "Canadá", "emprego"),
   tu:
@@ -386,7 +400,7 @@ falar o idioma, não só decorar regras.
 
   const textoGerado =
     resposta.output?.[0]?.content?.[0]?.text ||
-    "Desculpa, deu um erro aqui. Tenta de novo 🙏";
+    "Desculpa, deu um erro aqui. Tente de novo 🙏";
   const textoLimpo = limparTextoResposta(textoGerado);
 
   console.log("🧠 Resposta do Kito (bruta):", textoGerado);
@@ -590,7 +604,7 @@ async function processarMensagemAluno({
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      `Boas, ${primeiroNome}! 😄 Eu sou o Kito, professor de inglês e francês da Jovika Academy.\nComo queres que eu te chame?`
+      `Olá, ${primeiroNome}! 😄 Eu sou o Kito, professor de inglês e francês da Jovika Academy.\nComo você quer que eu chame você?`
     );
 
     await saveStudentToFirestore(numeroAluno, aluno);
@@ -613,7 +627,7 @@ async function processarMensagemAluno({
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      `Fechou, ${nome}! 😄 Agora diz-me: queres começar por inglês, francês ou os dois?`
+      `Perfeito, ${nome}! 😄 Agora me conta: você quer começar por inglês, francês ou os dois?`
     );
   } else if (aluno.stage === "ask_language") {
     // 2) Perguntar idioma (apenas uma vez)
@@ -622,7 +636,7 @@ async function processarMensagemAluno({
     if (!idioma) {
       await enviarMensagemWhatsApp(
         numeroAluno,
-        "Acho que não apanhei bem 😅\nResponde só com: inglês, francês ou os dois."
+        "Acho que não entendi muito bem 😅\nResponda só com: inglês, francês ou os dois."
       );
     } else {
       aluno.idioma = idioma;
@@ -640,8 +654,8 @@ async function processarMensagemAluno({
 
       await enviarMensagemWhatsApp(
         numeroAluno,
-        `Perfeito, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\n` +
-          `Primeiro, diz-me qual é o teu objetivo com esse idioma (ex: trabalho, viagem, confiança, faculdade, sair do país...).`
+        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\n` +
+          `Para eu te ajudar melhor, qual é o seu principal objetivo com esse idioma? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
       );
     }
   } else {
@@ -780,8 +794,8 @@ app.post("/zapi-webhook", async (req, res) => {
       if (!transcricao) {
         await enviarMensagemWhatsApp(
           numeroAluno,
-          "Tentei ouvir o teu áudio mas não consegui transcrever bem 😅\n" +
-            "Podes tentar falar um pouco mais perto do micro ou enviar de novo?"
+          "Tentei ouvir o seu áudio mas não consegui transcrever bem 😅\n" +
+            "Você pode tentar falar um pouco mais perto do microfone ou enviar de novo?"
         );
         return res.status(200).send("audio_transcription_failed");
       }
@@ -849,7 +863,7 @@ app.get("/admin/dashboard", (req, res) => {
 
   const html = `
 <!DOCTYPE html>
-<html lang="pt">
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8" />
   <title>Dashboard - Jovika Academy (Professor Kito)</title>
@@ -1048,7 +1062,7 @@ app.get("/admin/dashboard", (req, res) => {
       <tbody>
         ${
           alunos.length === 0
-            ? `<tr><td colspan="9">Ainda não há alunos. Assim que alguém mandar "Oi" para o Kito, aparece aqui. 😄</td></tr>`
+            ? `<tr><td colspan="9">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
             : alunos
                 .map((a) => {
                   let idiomaBadge = `<span class="badge">${a.idioma}</span>`;

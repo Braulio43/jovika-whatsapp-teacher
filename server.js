@@ -12,7 +12,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
-console.log("🔥🔥🔥 KITO v4 – TEXTO + ÁUDIO SOB PEDIDO 🔥🔥🔥");
+console.log("🔥🔥🔥 KITO v4.1 – TEXTO + ÁUDIO SOB PEDIDO (sem dizer que não pode enviar áudio) 🔥🔥🔥");
 
 dotenv.config();
 
@@ -133,13 +133,24 @@ function formatDate(d) {
   }
 }
 
-// Detecta se o aluno está a pedir ÁUDIO (manda áudio, lê em voz alta, pronúncia, etc.)
+// 🔊 Detecta se o aluno está a pedir ÁUDIO
 function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
 
   const gatilhos = [
     "manda audio",
     "manda áudio",
+    "manda um audio",
+    "manda um áudio",
+    "envia audio",
+    "envia um audio",
+    "envia um áudio",
+    "envia audio por favor",
+    "mensagem de voz",
+    "msg de voz",
+    "manda voz",
+    "fala por audio",
+    "fala por áudio",
     "responde em audio",
     "responde em áudio",
     "fala em audio",
@@ -169,7 +180,11 @@ function userQuerAudio(texto = "", isAudio = false) {
       t.includes("corrig") ||
       gatilhos.some((p) => t.includes(p)));
 
-  return pediuPorTexto || pediuPorAudio;
+  // palavra "audio" em qualquer contexto (ex: "enviasse um audio, por favor")
+  const palavraAudioSolta = t.includes("audio");
+
+  const resultado = pediuPorTexto || pediuPorAudio || palavraAudioSolta;
+  return resultado;
 }
 
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
@@ -282,11 +297,16 @@ DADOS DO ALUNO:
 - Passo atual (0-based): ${step}
 - Número total de passos no módulo: ${totalSteps}
 
-SOBRE ÁUDIO:
-- Às vezes o aluno manda áudio. Nós usamos uma transcrição automática do que ele disse.
-- Tu NÃO tens acesso direto ao som, só ao TEXTO transcrito.
-- Portanto, não inventes detalhes específicos de pronúncia (tipo "você falou o TH errado").
-- Podes falar de pronúncia de forma geral (ritmo, clareza, prática), mas sem detalhes inventados.
+SOBRE ÁUDIO (MUITO IMPORTANTE):
+- Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
+- **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
+- Quando o aluno pedir pronúncia em áudio, faz assim:
+  1) Explica por texto (como sempre: conceito + exemplos + mini exercício);
+  2) Diz algo simples que faça sentido também em áudio, por exemplo:
+     - "Agora vou mandar um áudio curto para tu ouvires a pronúncia, ok?"
+     - "Escuta o áudio e repete devagar."
+- Lembra-te: o mesmo texto que escreves também pode ser transformado em áudio. Então evita falar coisas que só fazem sentido em texto, tipo:
+  - "como escrevi acima" ou "como mostrei na mensagem anterior".
 
 COMO O KITO PENSA E AGE:
 - Tu lembras-te do contexto da conversa (histórico) e não repetes perguntas iniciais

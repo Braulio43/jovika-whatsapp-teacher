@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.8 – TEXTO + ÁUDIO SOB PEDIDO (voz masculina fixa, inglês/francês limpos) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v5.0 – TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES (1h e 2 dias) 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -306,20 +306,20 @@ async function saveStudentToFirestore(phone, aluno) {
 
     let createdAt = aluno.createdAt;
     let lastMessageAt = aluno.lastMessageAt;
+    let reminder1hSentAt = aluno.reminder1hSentAt;
+    let reminder2dSentAt = aluno.reminder2dSentAt;
 
-    if (createdAt && typeof createdAt.toDate === "function") {
-      createdAt = createdAt.toDate();
-    }
-    if (lastMessageAt && typeof lastMessageAt.toDate === "function") {
-      lastMessageAt = lastMessageAt.toDate();
-    }
+    const normalize = (val) => {
+      if (!val) return null;
+      if (typeof val.toDate === "function") return val.toDate();
+      const d = val instanceof Date ? val : new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    };
 
-    if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
-      createdAt = new Date();
-    }
-    if (!(lastMessageAt instanceof Date) || isNaN(lastMessageAt.getTime())) {
-      lastMessageAt = new Date();
-    }
+    createdAt = normalize(createdAt) || new Date();
+    lastMessageAt = normalize(lastMessageAt) || new Date();
+    reminder1hSentAt = normalize(reminder1hSentAt);
+    reminder2dSentAt = normalize(reminder2dSentAt);
 
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     await docRef.set(
@@ -331,8 +331,11 @@ async function saveStudentToFirestore(phone, aluno) {
         messagesCount: aluno.messagesCount ?? 0,
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
+        objetivo: aluno.objetivo ?? null,
         createdAt,
         lastMessageAt,
+        reminder1hSentAt: reminder1hSentAt || null,
+        reminder2dSentAt: reminder2dSentAt || null,
         updatedAt: new Date(),
       },
       { merge: true }
@@ -348,7 +351,22 @@ async function loadStudentFromFirestore(phone) {
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     const snap = await docRef.get();
     if (!snap.exists) return null;
-    return snap.data();
+    const data = snap.data();
+
+    const normalize = (val) => {
+      if (!val) return null;
+      if (typeof val.toDate === "function") return val.toDate();
+      const d = val instanceof Date ? val : new Date(val);
+      return isNaN(d.getTime()) ? null : d;
+    };
+
+    return {
+      ...data,
+      createdAt: normalize(data.createdAt) || new Date(),
+      lastMessageAt: normalize(data.lastMessageAt) || new Date(),
+      reminder1hSentAt: normalize(data.reminder1hSentAt),
+      reminder2dSentAt: normalize(data.reminder2dSentAt),
+    };
   } catch (err) {
     console.error("❌ Erro ao carregar aluno do Firestore:", err.message);
     return null;
@@ -418,35 +436,45 @@ DADOS DO ALUNO:
 - Nome: ${aluno.nome || "não informado"}
 - Idioma alvo: ${idiomaAlvo}
 - Nível aproximado: ${aluno.nivel || "iniciante"}
-- Módulo atual: ${modulo?.title || "Introdução"}
+- Módulo atual (apenas como referência): ${modulo?.title || "Introdução"}
 - Nível do módulo: ${modulo?.level || aluno.nivel || "iniciante"}
-- Objetivo do módulo: ${modulo?.goal || "ajudar o aluno a comunicar em situações básicas."}
+- Objetivo pedagógico do módulo: ${modulo?.goal || "ajudar o aluno a comunicar em situações básicas."}
 - Passo atual (0-based): ${step}
 - Número total de passos no módulo: ${totalSteps}
+- Objetivo declarado pelo aluno: ${
+    aluno.objetivo ||
+    "ainda não ficou claro — faça perguntas simples e naturais para entender o que ele realmente precisa (trabalho, viagem, faculdade, imigração, confiança, etc.)."
+  }
 
-SOBRE ÁUDIO (MUITO IMPORTANTE):
-- Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
-- **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
-- **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
-- **NÃO** digas "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
-- Quando o aluno pedir para ouvir algo em áudio (pronúncia, frases, explicação, diálogo, etc.):
-  1) Responde normalmente em texto (explicação + exemplos +, se fizer sentido, mini exercício).
-  2) No final da mensagem, faz **uma pergunta de preferência**, por exemplo:
-     - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
+KITO PROFESSOR HUMANO (ADAPTAÇÃO AO PERFIL):
+- Lê com atenção o histórico de mensagens para perceber:
+  - O que essa pessoa já sabe.
+  - Qual é a dificuldade principal (vocabulário, gramática, pronúncia, medo de falar, vergonha, etc.).
+  - Qual é o objetivo real (trabalho, viagem, estudos, imigração, sair do país, etc.).
+  - Se o aluno prefere áudio, texto ou uma mistura dos dois.
+- Usa tudo isso para adaptar a forma como ensina:
+  - Se o aluno está inseguro, fala mais devagar, usa menos conteúdo e mais apoio emocional.
+  - Se o aluno está avançado, evita explicações básicas demais.
+  - Se o aluno pede algo muito específico (ex: "como digo X"), responde diretamente antes de pensar em exercícios.
+- Você não é um "bot de exercícios". Você é um professor particular que conversa, ouve e pensa antes de responder.
 
 COMO O KITO PENSA E AGE:
-- Tu lembras-te do contexto da conversa (histórico) e não repetes perguntas iniciais
+- Lembra-se do contexto da conversa (histórico) e não repete perguntas iniciais
   como nome, idioma ou objetivo.
-- Tu respondes exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
+- Responde exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
   não como um script engessado.
-- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responde diretamente.
-- Se o aluno só disser coisas como "sim", "vamos", "quero", assume que ele quer
-  continuar para o próximo micro-passo do módulo, e tu crias esse próximo passo.
+- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responde diretamente
+  e só depois, se fizer sentido, oferece um pequeno exercício relacionado.
 - Se o aluno disser palavras soltas de objetivo ("trabalho", "confiança", "Canadá", "emprego"),
-  tu:
-    - NÃO ficas só a traduzir a palavra.
-    - Explicas como esse objetivo se relaciona com o idioma e o módulo.
-    - Dás um pequeno exercício ou frase relacionada a esse objetivo.
+  você:
+    - NÃO fica só traduzindo a palavra.
+    - Explica como esse objetivo se relaciona com o idioma e com o que ele precisa aprender.
+    - Propõe um pequeno exercício ou frase relacionada a esse objetivo, mas sempre conectada ao que ele acabou de falar.
+- Antes de mandar exercícios ou várias frases para o aluno repetir:
+    1) Pergunte-se: "O que essa pessoa realmente pediu nesta última mensagem?"
+    2) Se ela só pediu uma tradução ou uma dúvida pontual, responda de forma direta e clara, sem exercício extra.
+    3) Só ofereça exercício quando isso fizer sentido e deixe claro que é opcional.
+- Não force sempre "leia e responda". Use exercícios com cuidado e sempre ligados ao que o aluno acabou de dizer.
 
 ESTILO DE RESPOSTA:
 - Escreve como se fosse mensagem de WhatsApp:
@@ -454,26 +482,41 @@ ESTILO DE RESPOSTA:
   - Parágrafos curtos
   - Linguagem simples e direta
 - Usa emojis com moderação (1–2 no máximo por mensagem), só se fizer sentido.
-- Nunca mandes textão enorme. No máximo 3 blocos:
+- Nunca mande textão enorme. No máximo 3 blocos:
   1) Explicação rápida (contexto + conceito)
-  2) 2–3 exemplos com tradução
-  3) Um mini exercício para o aluno responder (1 ou 2 frases, gap-fill, escolha, etc.)
+  2) 2–3 exemplos com tradução, se necessário
+  3) Um mini exercício opcional (1 ou 2 frases, gap-fill, escolha, etc.), apenas se encaixar no momento.
+- Quando não fizer sentido exercício, termine com uma pergunta simples do tipo:
+  - "Isso fez sentido para você?"
+  - "Quer que eu te dê mais um exemplo?"
+  - "Você quer praticar isso com um exercício rapidinho?"
+
+SOBRE ÁUDIO (MUITO IMPORTANTE):
+- Você consegue enviar áudios curtos de voz sintetizada quando o aluno pede.
+- **NUNCA** diga frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
+- **NUNCA** escreva tags como "[Áudio enviado]" ou "[audio enviado]" nem use prefixos como "(Áudio)" ou "Áudio:".
+- **NÃO** diga "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
+- Quando o aluno pedir para ouvir algo em áudio (pronúncia, frases, explicação, diálogo, etc.):
+  1) Responda normalmente em texto (explicação + exemplos +, se fizer sentido, um mini exercício).
+  2) No final da mensagem, faça **uma pergunta de preferência**, por exemplo:
+     - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
 
 CORREÇÃO DE ERROS:
 - Quando o aluno erra:
-  - Mostra a frase original dele
-  - Mostra a versão corrigida
-  - Faz uma explicação rápida do porquê (sem excesso de gramática pesada) 
+  - Mostre a frase original dele.
+  - Mostre a versão corrigida.
+  - Faça uma explicação rápida do porquê (sem excesso de gramática pesada).
+- Mantenha o tom positivo. Nada de "está errado", prefira "ficaria melhor assim" ou "podemos ajustar assim".
 
 TOM EMOCIONAL:
-- Se o aluno demonstrar dificuldade, desmotivação ou cansaço, responde de forma
-  mais acolhedora e incentiva a continuar devagar.
-- Se o aluno estiver empolgado, acompanha essa energia e puxa um pouco mais.
+- Se o aluno demonstrar dificuldade, desmotivação ou cansaço, responda de forma
+  mais acolhedora e estimule a continuar devagar.
+- Se o aluno estiver empolgado, acompanhe essa energia e puxe um pouco mais.
 
 RESUMO:
-Tu és o Kito, uma espécie de "ChatGPT-professor de idiomas" da Jovika Academy:
+Você é o Kito, uma espécie de "ChatGPT-professor de idiomas" da Jovika Academy:
 inteligente, adaptável, humano, e sempre focado em fazer o aluno realmente
-falar o idioma, não só decorar regras.
+falar o idioma, não só decorar regras ou repetir frases soltas.
   `.trim();
 
   const mensagens = [
@@ -663,24 +706,8 @@ async function processarMensagemAluno({
   if (!aluno) {
     const fromDb = await loadStudentFromFirestore(numeroAluno);
     if (fromDb) {
-      const createdAt =
-        fromDb.createdAt && typeof fromDb.createdAt.toDate === "function"
-          ? fromDb.createdAt.toDate()
-          : fromDb.createdAt
-          ? new Date(fromDb.createdAt)
-          : new Date();
-
-      const lastMessageAt =
-        fromDb.lastMessageAt && typeof fromDb.lastMessageAt.toDate === "function"
-          ? fromDb.lastMessageAt.toDate()
-          : fromDb.lastMessageAt
-          ? new Date(fromDb.lastMessageAt)
-          : new Date();
-
       aluno = {
         ...fromDb,
-        createdAt,
-        lastMessageAt,
         history: [],
       };
       students[numeroAluno] = aluno;
@@ -699,6 +726,9 @@ async function processarMensagemAluno({
       lastMessageAt: agora,
       moduleIndex: 0,
       moduleStep: 0,
+      objetivo: null,
+      reminder1hSentAt: null,
+      reminder2dSentAt: null,
       history: [],
     };
     students[numeroAluno] = aluno;
@@ -714,9 +744,11 @@ async function processarMensagemAluno({
     return;
   }
 
-  // Atualiza stats
+  // Atualiza stats e reseta lembretes (porque o aluno voltou a falar)
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
+  aluno.reminder1hSentAt = null;
+  aluno.reminder2dSentAt = null;
   aluno.history = aluno.history || [];
 
   const prefix = isAudio ? "[ÁUDIO] " : "";
@@ -765,6 +797,12 @@ async function processarMensagemAluno({
     // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
+    }
+
+    // Se ainda não registou o objetivo, assume que esta mensagem pode ser isso
+    if (!aluno.objetivo) {
+      aluno.objetivo = texto;
+      console.log("🎯 Objetivo do aluno registrado:", aluno.objetivo);
     }
 
     const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
@@ -837,14 +875,16 @@ async function processarMensagemAluno({
       // Fluxo normal
       const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
 
-      // Avança micro-passos do módulo
-      moduleStep += 1;
-      const totalSteps = moduloAtual.steps || 4;
-      if (moduleStep >= totalSteps) {
-        moduleIndex += 1;
-        moduleStep = 0;
-        if (moduleIndex >= trilha.length) {
-          moduleIndex = trilha.length - 1;
+      // Avança micro-passos do módulo APENAS quando o aluno confirma continuar
+      if (confirmacao) {
+        moduleStep += 1;
+        const totalSteps = moduloAtual.steps || 4;
+        if (moduleStep >= totalSteps) {
+          moduleIndex += 1;
+          moduleStep = 0;
+          if (moduleIndex >= trilha.length) {
+            moduleIndex = trilha.length - 1;
+          }
         }
       }
 
@@ -876,6 +916,63 @@ async function processarMensagemAluno({
   students[numeroAluno] = aluno;
   await saveStudentToFirestore(numeroAluno, aluno);
 }
+
+/** ---------- LEMBRETES AUTOMÁTICOS (1h e 2 dias) ---------- **/
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000; // a cada 5 minutos
+
+function getIdiomaTexto(idioma) {
+  if (idioma === "ingles") return "inglês";
+  if (idioma === "frances") return "francês";
+  if (idioma === "ambos") return "inglês e francês";
+  return "o idioma";
+}
+
+async function verificarELancarLembretes() {
+  const agora = new Date();
+
+  for (const [numero, aluno] of Object.entries(students)) {
+    if (!aluno.lastMessageAt) continue;
+
+    const diff = agora - new Date(aluno.lastMessageAt);
+    const idiomaTexto = getIdiomaTexto(aluno.idioma);
+    const nome = aluno.nome || "por aqui";
+
+    // Já enviou depois desta última mensagem?
+    const afterLast = (d) => !d || new Date(d) < new Date(aluno.lastMessageAt);
+
+    // Lembrete de 2 dias (tem prioridade se o aluno sumiu muito)
+    if (
+      diff >= TWO_DAYS_MS &&
+      afterLast(aluno.reminder2dSentAt)
+    ) {
+      const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar a sua aula agora comigo?`;
+      console.log("⏰ Lembrete 2 dias para", numero);
+      aluno.reminder2dSentAt = agora;
+      await enviarMensagemWhatsApp(numero, msg2d);
+      await saveStudentToFirestore(numero, aluno);
+      continue; // evita mandar também o de 1h
+    }
+
+    // Lembrete de 1 hora (só até 2 dias)
+    if (
+      diff >= ONE_HOUR_MS &&
+      diff < TWO_DAYS_MS &&
+      afterLast(aluno.reminder1hSentAt)
+    ) {
+      const msg1h = `Oi, ${nome}! 😄 Só passando para saber se você quer continuar a sua aula de ${idiomaTexto} agora. Se quiser, é só me mandar uma mensagem e seguimos do ponto onde paramos.`;
+      console.log("⏰ Lembrete 1h para", numero);
+      aluno.reminder1hSentAt = agora;
+      await enviarMensagemWhatsApp(numero, msg1h);
+      await saveStudentToFirestore(numero, aluno);
+    }
+  }
+}
+
+// Inicia o loop de lembretes
+setInterval(verificarELancarLembretes, REMINDER_CHECK_INTERVAL_MS);
 
 /** ---------- WEBHOOK Z-API ---------- **/
 
@@ -1300,13 +1397,13 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES) em http://localhost:${PORT}`
   );
 });

@@ -1,5 +1,5 @@
 // server.js – Kito, professor da Jovika Academy
-// Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO
+// Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES PERSONALIZADOS
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v5.0 – TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES (1h e 2 dias) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v5.1 – TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES PERSONALIZADOS 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -295,6 +295,68 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   return texto;
 }
 
+/** ---------- Helpers de perfil pedagógico ---------- **/
+
+function inferirNivelPercebido(texto) {
+  const t = normalizarTexto(texto);
+  if (t.includes("nunca") || t.includes("zero") || t.includes("começar do zero")) {
+    return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
+  }
+  if (t.includes("basico") || t.includes("básico") || t.includes("pouco")) {
+    return { nivelPercebido: "básico", nivelCEFR: "A1" };
+  }
+  if (t.includes("intermediario") || t.includes("intermediário") || t.includes("mediano")) {
+    return { nivelPercebido: "intermediário", nivelCEFR: "A2/B1" };
+  }
+  if (t.includes("avancado") || t.includes("avançado") || t.includes("fluente")) {
+    return { nivelPercebido: "avançado", nivelCEFR: "B2+" };
+  }
+  return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
+}
+
+function inferirMaiorDificuldade(texto) {
+  const t = normalizarTexto(texto);
+  if (t.includes("pronuncia") || t.includes("pronúncia") || t.includes("falar") || t.includes("fala")) {
+    return "pronúncia / fala";
+  }
+  if (t.includes("gramatica") || t.includes("gramática")) {
+    return "gramática";
+  }
+  if (t.includes("vocabulario") || t.includes("vocabulário") || t.includes("palavra")) {
+    return "vocabulário";
+  }
+  if (t.includes("escuta") || t.includes("ouvir") || t.includes("listening")) {
+    return "escuta / compreensão auditiva";
+  }
+  if (t.includes("vergonha") || t.includes("timido") || t.includes("tímido") || t.includes("medo")) {
+    return "medo / vergonha de falar";
+  }
+  return texto; // guarda a descrição original se não identificou
+}
+
+function inferirPreferenciaFormato(texto) {
+  const t = normalizarTexto(texto);
+  if (t.includes("audio") || t.includes("áudio") || t.includes("voz")) return "audio";
+  if (t.includes("escrita") || t.includes("texto") || t.includes("mensagem")) return "texto";
+  if (t.includes("mistur") || t.includes("tanto faz") || t.includes("os dois")) return "misto";
+  return "misto";
+}
+
+function inferirFrequenciaPreferida(texto) {
+  const t = normalizarTexto(texto);
+  if (t.includes("todo dia") || t.includes("todos os dias") || t.includes("diario") || t.includes("diário")) {
+    return "diario";
+  }
+  if (t.includes("3x") || t.includes("3 vezes") || t.includes("tres vezes")) {
+    return "3x";
+  }
+  if (t.includes("so quando") || t.includes("só quando") || t.includes("quando eu falar") || t.includes("quando falar comigo")) {
+    return "livre";
+  }
+  // default se não ficou claro: 3x por semana
+  return "3x";
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -327,11 +389,15 @@ async function saveStudentToFirestore(phone, aluno) {
         nome: aluno.nome ?? null,
         idioma: aluno.idioma ?? null,
         nivel: aluno.nivel ?? null,
+        nivelPercebido: aluno.nivelPercebido ?? null,
+        maiorDificuldade: aluno.maiorDificuldade ?? null,
+        preferenciaFormato: aluno.preferenciaFormato ?? null,
+        frequenciaPreferida: aluno.frequenciaPreferida ?? null,
+        objetivo: aluno.objetivo ?? null,
         stage: aluno.stage ?? null,
         messagesCount: aluno.messagesCount ?? 0,
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
-        objetivo: aluno.objetivo ?? null,
         createdAt,
         lastMessageAt,
         reminder1hSentAt: reminder1hSentAt || null,
@@ -432,49 +498,65 @@ PORTUGUÊS DO BRASIL (IMPORTANTE):
   "Eu estou cansado."
 - Evita misturar francês/inglês e português na mesma linha.
 
-DADOS DO ALUNO:
+PERFIL PEDAGÓGICO DESTE ALUNO:
 - Nome: ${aluno.nome || "não informado"}
 - Idioma alvo: ${idiomaAlvo}
-- Nível aproximado: ${aluno.nivel || "iniciante"}
-- Módulo atual (apenas como referência): ${modulo?.title || "Introdução"}
-- Nível do módulo: ${modulo?.level || aluno.nivel || "iniciante"}
-- Objetivo pedagógico do módulo: ${modulo?.goal || "ajudar o aluno a comunicar em situações básicas."}
-- Passo atual (0-based): ${step}
-- Número total de passos no módulo: ${totalSteps}
+- Nível aproximado (interno): ${aluno.nivel || "A0"}
+- Nível percebido pelo próprio aluno: ${aluno.nivelPercebido || "não definido"}
+- Maior dificuldade declarada: ${
+    aluno.maiorDificuldade || "ainda não ficou clara — faça perguntas simples para descobrir."
+  }
+- Preferência de formato: ${
+    aluno.preferenciaFormato || "misto"
+  } (entenda: "audio", "texto" ou "misto").
+- Frequência preferida de puxão: ${
+    aluno.frequenciaPreferida ||
+    "não definida — se ainda não estiver claro, pergunte de forma natural."
+  }
 - Objetivo declarado pelo aluno: ${
     aluno.objetivo ||
     "ainda não ficou claro — faça perguntas simples e naturais para entender o que ele realmente precisa (trabalho, viagem, faculdade, imigração, confiança, etc.)."
   }
 
+MÓDULO ATUAL (APENAS COMO GUIA, NÃO SCRIPT DURO):
+- Título: ${modulo?.title || "Introdução"}
+- Nível do módulo: ${modulo?.level || aluno.nivel || "iniciante"}
+- Objetivo pedagógico do módulo: ${
+    modulo?.goal || "ajudar o aluno a comunicar em situações básicas."
+  }
+- Passo atual (0-based): ${step}
+- Número total de passos no módulo: ${totalSteps}
+
 KITO PROFESSOR HUMANO (ADAPTAÇÃO AO PERFIL):
-- Lê com atenção o histórico de mensagens para perceber:
+- Leia com atenção o histórico de mensagens para perceber:
   - O que essa pessoa já sabe.
   - Qual é a dificuldade principal (vocabulário, gramática, pronúncia, medo de falar, vergonha, etc.).
-  - Qual é o objetivo real (trabalho, viagem, estudos, imigração, sair do país, etc.).
+  - Qual é o objetivo real (trabalho, viagem, estudos, imigração, sair do país, confiança, etc.).
   - Se o aluno prefere áudio, texto ou uma mistura dos dois.
-- Usa tudo isso para adaptar a forma como ensina:
-  - Se o aluno está inseguro, fala mais devagar, usa menos conteúdo e mais apoio emocional.
-  - Se o aluno está avançado, evita explicações básicas demais.
-  - Se o aluno pede algo muito específico (ex: "como digo X"), responde diretamente antes de pensar em exercícios.
+- Use tudo isso para adaptar a forma como ensina:
+  - Se a maior dificuldade for pronúncia ou fala, explique com calma e ofereça exemplos curtos que funcionam bem em áudio.
+  - Se a maior dificuldade for gramática, dê explicações simples e poucos exemplos, sem sobrecarregar.
+  - Se for vocabulário, traga palavras úteis ligadas ao objetivo dele.
+  - Se for medo/vergonha de falar, seja mais acolhedor e destaque pequenos progressos.
 - Você não é um "bot de exercícios". Você é um professor particular que conversa, ouve e pensa antes de responder.
+- Antes de mandar exercícios ou várias frases para o aluno repetir:
+  1) Pergunte-se: "O que essa pessoa realmente pediu nesta última mensagem?"
+  2) Se ela só pediu uma tradução ou tirou uma dúvida pontual, responda de forma direta e clara, sem exercício extra obrigatório.
+  3) Só ofereça exercício quando isso fizer sentido e deixe claro que é opcional.
 
 COMO O KITO PENSA E AGE:
 - Lembra-se do contexto da conversa (histórico) e não repete perguntas iniciais
   como nome, idioma ou objetivo.
 - Responde exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
   não como um script engessado.
-- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responde diretamente
-  e só depois, se fizer sentido, oferece um pequeno exercício relacionado.
+- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responda diretamente
+  e só depois, se fizer sentido, ofereça um pequeno exercício relacionado.
 - Se o aluno disser palavras soltas de objetivo ("trabalho", "confiança", "Canadá", "emprego"),
   você:
     - NÃO fica só traduzindo a palavra.
     - Explica como esse objetivo se relaciona com o idioma e com o que ele precisa aprender.
     - Propõe um pequeno exercício ou frase relacionada a esse objetivo, mas sempre conectada ao que ele acabou de falar.
-- Antes de mandar exercícios ou várias frases para o aluno repetir:
-    1) Pergunte-se: "O que essa pessoa realmente pediu nesta última mensagem?"
-    2) Se ela só pediu uma tradução ou uma dúvida pontual, responda de forma direta e clara, sem exercício extra.
-    3) Só ofereça exercício quando isso fizer sentido e deixe claro que é opcional.
-- Não force sempre "leia e responda". Use exercícios com cuidado e sempre ligados ao que o aluno acabou de dizer.
+- Quando o aluno responde só "sim", "ok", "vamos", "tá bem", interprete isso como confirmação para dar o próximo micro-passo, MAS ainda assim responda de forma natural, não mecânica.
 
 ESTILO DE RESPOSTA:
 - Escreve como se fosse mensagem de WhatsApp:
@@ -601,7 +683,7 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
 
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "onyx", // voz fixa
+      voice: process.env.OPENAI_TTS_VOICE || "onyx", // voz masculina fixa
       instructions,
       input: texto,
       response_format: "mp3",
@@ -709,6 +791,11 @@ async function processarMensagemAluno({
       aluno = {
         ...fromDb,
         history: [],
+        nivelPercebido: fromDb.nivelPercebido || null,
+        maiorDificuldade: fromDb.maiorDificuldade || null,
+        preferenciaFormato: fromDb.preferenciaFormato || null,
+        frequenciaPreferida: fromDb.frequenciaPreferida || null,
+        objetivo: fromDb.objetivo || null,
       };
       students[numeroAluno] = aluno;
     }
@@ -721,12 +808,16 @@ async function processarMensagemAluno({
       nome: null,
       idioma: null,
       nivel: "A0",
+      nivelPercebido: null,
+      maiorDificuldade: null,
+      preferenciaFormato: null,
+      frequenciaPreferida: null,
+      objetivo: null,
       messagesCount: 0,
       createdAt: agora,
       lastMessageAt: agora,
       moduleIndex: 0,
       moduleStep: 0,
-      objetivo: null,
       reminder1hSentAt: null,
       reminder2dSentAt: null,
       history: [],
@@ -765,7 +856,7 @@ async function processarMensagemAluno({
       `Perfeito, ${nome}! 😄 Agora me conta: você quer começar por inglês, francês ou os dois?`
     );
   } else if (aluno.stage === "ask_language") {
-    // 2) Perguntar idioma (apenas uma vez)
+    // 2) Perguntar idioma
     const idioma = detectarIdioma(texto);
 
     if (!idioma) {
@@ -775,7 +866,7 @@ async function processarMensagemAluno({
       );
     } else {
       aluno.idioma = idioma;
-      aluno.stage = "learning";
+      aluno.stage = "ask_experience";
       aluno.moduleIndex = 0;
       aluno.moduleStep = 0;
       aluno.nivel = "A0";
@@ -789,17 +880,62 @@ async function processarMensagemAluno({
 
       await enviarMensagemWhatsApp(
         numeroAluno,
-        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\n` +
-          `Para eu te ajudar melhor, qual é o seu principal objetivo com esse idioma? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
+        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\nAntes de começar a aula, quero te conhecer um pouco melhor para adaptar tudo ao seu perfil.\n\nVocê já estudou ${idiomaTexto} antes? Pode responder algo como:\n- "Nunca estudei"\n- "Já estudei um pouco"\n- "Já tenho uma base boa".`
       );
     }
+  } else if (aluno.stage === "ask_experience") {
+    // 3) Já estudou antes?
+    const { nivelPercebido, nivelCEFR } = inferirNivelPercebido(texto);
+    aluno.nivelPercebido = nivelPercebido;
+    aluno.nivel = aluno.nivel || nivelCEFR;
+
+    aluno.stage = "ask_difficulty";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      `Perfeito, entendi. 😊\nAgora me conta: em ${aluno.idioma === "frances" ? "francês" : "inglês"}, o que você sente que é mais difícil para você hoje?\n\nPor exemplo: pronúncia, gramática, vocabulário, escutar, vergonha de falar...`
+    );
+  } else if (aluno.stage === "ask_difficulty") {
+    // 4) Maior dificuldade
+    aluno.maiorDificuldade = inferirMaiorDificuldade(texto);
+    aluno.stage = "ask_preference_format";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      "Ótimo, obrigado por compartilhar isso comigo. 😊\nOutra coisa importante: você prefere que eu explique mais por áudio, por mensagem escrita ou misturando os dois?"
+    );
+  } else if (aluno.stage === "ask_preference_format") {
+    // 5) Preferência de formato
+    aluno.preferenciaFormato = inferirPreferenciaFormato(texto);
+    aluno.stage = "ask_frequency";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      "Show! Para eu organizar melhor os seus estudos:\nVocê prefere que eu te puxe todos os dias, 3x por semana ou só quando você falar comigo?"
+    );
+  } else if (aluno.stage === "ask_frequency") {
+    // 6) Frequência de lembrete
+    aluno.frequenciaPreferida = inferirFrequenciaPreferida(texto);
+    aluno.stage = "learning";
+
+    const idiomaTexto =
+      aluno.idioma === "ingles"
+        ? "inglês"
+        : aluno.idioma === "frances"
+        ? "francês"
+        : "inglês e francês";
+
+    await enviarMensagemWhatsApp(
+      numeroAluno,
+      `Maravilha, combinado! 😄\nAgora a última coisa para eu te acompanhar bem:\nQual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...`
+    );
   } else {
-    // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
+    // 7) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
     }
 
-    // Se ainda não registou o objetivo, assume que esta mensagem pode ser isso
+    // Se ainda não registou o objetivo, assume que esta mensagem é isso
     if (!aluno.objetivo) {
       aluno.objetivo = texto;
       console.log("🎯 Objetivo do aluno registrado:", aluno.objetivo);
@@ -936,24 +1072,23 @@ async function verificarELancarLembretes() {
   for (const [numero, aluno] of Object.entries(students)) {
     if (!aluno.lastMessageAt) continue;
 
+    // Se o aluno escolheu "só quando você falar comigo", não envia lembretes
+    if (aluno.frequenciaPreferida === "livre") continue;
+
     const diff = agora - new Date(aluno.lastMessageAt);
     const idiomaTexto = getIdiomaTexto(aluno.idioma);
     const nome = aluno.nome || "por aqui";
 
-    // Já enviou depois desta última mensagem?
     const afterLast = (d) => !d || new Date(d) < new Date(aluno.lastMessageAt);
 
     // Lembrete de 2 dias (tem prioridade se o aluno sumiu muito)
-    if (
-      diff >= TWO_DAYS_MS &&
-      afterLast(aluno.reminder2dSentAt)
-    ) {
+    if (diff >= TWO_DAYS_MS && afterLast(aluno.reminder2dSentAt)) {
       const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar a sua aula agora comigo?`;
       console.log("⏰ Lembrete 2 dias para", numero);
       aluno.reminder2dSentAt = agora;
       await enviarMensagemWhatsApp(numero, msg2d);
       await saveStudentToFirestore(numero, aluno);
-      continue; // evita mandar também o de 1h
+      continue;
     }
 
     // Lembrete de 1 hora (só até 2 dias)
@@ -1222,6 +1357,10 @@ app.get("/admin/dashboard", (req, res) => {
     }
     .stage-pill.ask_name { color: #f97316; }
     .stage-pill.ask_language { color: #22c55e; }
+    .stage-pill.ask_experience { color: #a855f7; }
+    .stage-pill.ask_difficulty { color: #facc15; }
+    .stage-pill.ask_preference_format { color: #ec4899; }
+    .stage-pill.ask_frequency { color: #22c55e; }
     .stage-pill.learning { color: #38bdf8; }
     .table-wrapper {
       max-height: 60vh;
@@ -1397,13 +1536,13 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES) em http://localhost:${PORT}`
   );
 });

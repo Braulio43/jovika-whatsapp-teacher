@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v5.1 – TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES PERSONALIZADOS 🔥🔥🔥"
+  "🔥🔥🔥 KITO v5.2 – TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA MAIS HUMANA 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -357,6 +357,57 @@ function inferirFrequenciaPreferida(texto) {
   return "3x";
 }
 
+/** ---------- Detectar tipo de mensagem (tradução vs conversa) ---------- **/
+
+function detectarTipoMensagem(textoNorm = "") {
+  if (!textoNorm) return "geral";
+
+  // Pedido de tradução / "como se diz"
+  const isPedidoTraducao =
+    textoNorm.includes("como se diz") ||
+    textoNorm.includes("como diz") ||
+    textoNorm.includes("como eu digo") ||
+    textoNorm.includes("como digo") ||
+    textoNorm.includes("traduz") ||
+    textoNorm.includes("traduza") ||
+    textoNorm.includes("tradução") ||
+    textoNorm.includes("translate") ||
+    textoNorm.includes("em ingles") ||
+    textoNorm.includes("em inglês") ||
+    textoNorm.includes("em frances") ||
+    textoNorm.includes("em francês") ||
+    textoNorm.includes("what does") ||
+    textoNorm.includes("how do i say");
+
+  if (isPedidoTraducao) return "pedido_traducao";
+
+  // Perguntas sobre o próprio Kito: nome, quem é, etc.
+  const isPerguntaSobreKito =
+    textoNorm.includes("qual e o seu nome") ||
+    textoNorm.includes("qual o seu nome") ||
+    textoNorm.includes("teu nome") ||
+    textoNorm.includes("seu nome") ||
+    textoNorm.includes("como te chamas") ||
+    textoNorm.includes("como se chama") ||
+    textoNorm.includes("quem e voce") ||
+    textoNorm.includes("quem é voce") ||
+    textoNorm.includes("quem é você") ||
+    textoNorm.includes("quem e voce?") ||
+    textoNorm.includes("what is your name") ||
+    textoNorm.includes("what's your name") ||
+    textoNorm.includes("who are you") ||
+    textoNorm.includes("voce e humano") ||
+    textoNorm.includes("você é humano") ||
+    textoNorm.includes("voce é um robo") ||
+    textoNorm.includes("você é um robô") ||
+    textoNorm.includes("vc e um robo") ||
+    textoNorm.includes("vc é um robo");
+
+  if (isPerguntaSobreKito) return "pergunta_sobre_kito";
+
+  return "geral";
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -445,12 +496,13 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-async function gerarRespostaKito(aluno, moduloAtual) {
+async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
   const history = aluno.history || [];
   const ultimoUser = history.filter((m) => m.role === "user").slice(-1)[0];
   const textoDoAluno = ultimoUser ? ultimoUser.content : "(sem mensagem recente)";
 
   console.log("🧠 Pergunta do aluno:", textoDoAluno);
+  console.log("🧠 Tipo de mensagem detectado:", tipoMensagem);
 
   const idiomaAlvo =
     aluno.idioma === "frances"
@@ -526,6 +578,26 @@ MÓDULO ATUAL (APENAS COMO GUIA, NÃO SCRIPT DURO):
   }
 - Passo atual (0-based): ${step}
 - Número total de passos no módulo: ${totalSteps}
+
+TIPO DA ÚLTIMA MENSAGEM:
+- tipoMensagem: ${tipoMensagem}
+- Interpretação:
+  - "pedido_traducao" = o aluno pediu explicitamente para saber COMO DIZER algo em inglês/francês, TRADUZIR, ou corrigir uma frase específica.
+  - "pergunta_sobre_kito" = o aluno perguntou sobre você (nome, idade, quem é você, se é humano ou robô, etc.).
+  - "geral" = mensagem de conversa normal, dúvida ou aula.
+
+REGRAS ESPECIAIS PARA ISSO:
+- Se tipoMensagem = "pedido_traducao":
+  - Explique em português do Brasil e dê a frase correta no idioma alvo.
+  - Não transforme a frase do aluno em um parágrafo inteiro em inglês/francês se ele não pediu.
+  - Não responda apenas repetindo a frase dele traduzida; converse, explique e, se fizer sentido, ofereça um exemplo extra.
+- Se tipoMensagem = "pergunta_sobre_kito":
+  - Responda em português do Brasil, como se fosse uma conversa real.
+  - Diga claramente que o seu nome é Kito, que você é o professor de inglês e francês da Jovika Academy e que é uma inteligência artificial treinada para ensinar línguas pelo WhatsApp.
+  - Você pode acrescentar uma ou duas frases em inglês/francês APENAS se o próprio aluno pedir para ouvir isso na outra língua.
+- Se tipoMensagem = "geral":
+  - Priorize responder à pergunta ou comentário do aluno como uma pessoa numa conversa.
+  - Só proponha exercício ou reformule a frase dele se isso fizer sentido no contexto ou se ele pedir correção.
 
 KITO PROFESSOR HUMANO (ADAPTAÇÃO AO PERFIL):
 - Leia com atenção o histórico de mensagens para perceber:
@@ -893,7 +965,9 @@ async function processarMensagemAluno({
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      `Perfeito, entendi. 😊\nAgora me conta: em ${aluno.idioma === "frances" ? "francês" : "inglês"}, o que você sente que é mais difícil para você hoje?\n\nPor exemplo: pronúncia, gramática, vocabulário, escutar, vergonha de falar...`
+      `Perfeito, entendi. 😊\nAgora me conta: em ${
+        aluno.idioma === "frances" ? "francês" : "inglês"
+      }, o que você sente que é mais difícil para você hoje?\n\nPor exemplo: pronúncia, gramática, vocabulário, escutar, vergonha de falar...`
     );
   } else if (aluno.stage === "ask_difficulty") {
     // 4) Maior dificuldade
@@ -927,7 +1001,7 @@ async function processarMensagemAluno({
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      `Maravilha, combinado! 😄\nAgora a última coisa para eu te acompanhar bem:\nQual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...`
+      `Maravilha, combinado! 😄\nAgora a última coisa para eu te acompanhar bem:\nQual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
     );
   } else {
     // 7) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
@@ -940,6 +1014,9 @@ async function processarMensagemAluno({
       aluno.objetivo = texto;
       console.log("🎯 Objetivo do aluno registrado:", aluno.objetivo);
     }
+
+    const textoNorm = normalizarTexto(texto || "");
+    const tipoMensagem = detectarTipoMensagem(textoNorm);
 
     const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
 
@@ -960,7 +1037,6 @@ async function processarMensagemAluno({
     moduloAtual = trilha[moduleIndex];
 
     const querAudio = userQuerAudio(texto, isAudio);
-    const textoNorm = normalizarTexto(texto || "");
     const pediuExercicioEmAudio =
       querAudio &&
       (textoNorm.includes("exercicio") ||
@@ -973,6 +1049,7 @@ async function processarMensagemAluno({
       isAudio,
       querAudio,
       pediuExercicioEmAudio,
+      tipoMensagem,
     });
 
     // idioma alvo para áudio (o que o aluno está a estudar)
@@ -1009,7 +1086,11 @@ async function processarMensagemAluno({
       await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
     } else {
       // Fluxo normal
-      const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
+      const respostaKito = await gerarRespostaKito(
+        aluno,
+        moduloAtual,
+        tipoMensagem
+      );
 
       // Avança micro-passos do módulo APENAS quando o aluno confirma continuar
       if (confirmacao) {
@@ -1081,7 +1162,7 @@ async function verificarELancarLembretes() {
 
     const afterLast = (d) => !d || new Date(d) < new Date(aluno.lastMessageAt);
 
-    // Lembrete de 2 dias (tem prioridade se o aluno sumiu muito)
+    // Lembrete de 2 dias
     if (diff >= TWO_DAYS_MS && afterLast(aluno.reminder2dSentAt)) {
       const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar a sua aula agora comigo?`;
       console.log("⏰ Lembrete 2 dias para", numero);
@@ -1091,7 +1172,7 @@ async function verificarELancarLembretes() {
       continue;
     }
 
-    // Lembrete de 1 hora (só até 2 dias)
+    // Lembrete de 1 hora
     if (
       diff >= ONE_HOUR_MS &&
       diff < TWO_DAYS_MS &&
@@ -1536,13 +1617,13 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA HUMANA) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA HUMANA) em http://localhost:${PORT}`
   );
 });

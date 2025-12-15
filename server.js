@@ -1,5 +1,6 @@
 // server.js – Kito, professor da Jovika Academy
 // Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES PERSONALIZADOS
+// + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO EM MODO CONVERSA
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -13,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v5.2 – TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA MAIS HUMANA 🔥🔥🔥"
+  "🔥🔥🔥 KITO v5.3 – MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -135,7 +136,7 @@ function formatDate(d) {
   }
 }
 
-// 🔊 Detecta se o aluno está a pedir ÁUDIO
+// 🔊 Detecta se o aluno está a pedir ÁUDIO (pedido explícito)
 function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
 
@@ -188,22 +189,54 @@ function userQuerAudio(texto = "", isAudio = false) {
   return resultado;
 }
 
-// Limpa coisas que não queremos que apareçam/lêem, tipo "[Áudio enviado]" ou "(Áudio)"
+// 🧠 Detecta comando para trocar modo (conversa/aprender)
+function detectarComandoModo(texto = "") {
+  const t = normalizarTexto(texto);
+
+  const querConversa =
+    t.includes("modo conversa") ||
+    t.includes("modo convers") ||
+    t === "conversa" ||
+    t.includes("só conversar") ||
+    t.includes("so conversar") ||
+    t.includes("vamos conversar") ||
+    t.includes("apenas conversar") ||
+    t.includes("quero conversar") ||
+    t.includes("praticar conversacao") ||
+    t.includes("praticar conversação") ||
+    t.includes("praticar falando");
+
+  const querAprender =
+    t.includes("modo aprender") ||
+    t.includes("modo aula") ||
+    t.includes("modo professor") ||
+    t === "aprender" ||
+    t.includes("quero aprender") ||
+    t.includes("quero estudar") ||
+    t.includes("vamos estudar") ||
+    t.includes("me corrige") ||
+    t.includes("me corrija") ||
+    t.includes("corrige tudo") ||
+    t.includes("corrigir tudo");
+
+  if (querConversa) return "conversa";
+  if (querAprender) return "aprender";
+  return null;
+}
+
+// Limpa coisas que não queremos que apareçam/lêem
 function limparTextoResposta(txt = "") {
   if (!txt) return "";
   let r = txt;
 
-  // remove [Áudio enviado], [audio enviado], etc.
   r = r.replace(/\[\s*áudio enviado\s*\]/gi, "");
   r = r.replace(/\[\s*audio enviado\s*\]/gi, "");
   r = r.replace(/áudio enviado/gi, "");
   r = r.replace(/audio enviado/gi, "");
 
-  // remove "(Áudio)" ou "(audio)" em qualquer parte
   r = r.replace(/\(\s*áudio\s*\)/gi, "");
   r = r.replace(/\(\s*audio\s*\)/gi, "");
 
-  // remove qualquer frase que fale "vou ... áudio" ou "mandar ... áudio" ou "enviar ... áudio"
   r = r.replace(/.*vou .*áudio.*(\r?\n)?/gi, "");
   r = r.replace(/.*vou .*audio.*(\r?\n)?/gi, "");
   r = r.replace(/.*mandar .*áudio.*(\r?\n)?/gi, "");
@@ -211,7 +244,6 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/.*enviar .*áudio.*(\r?\n)?/gi, "");
   r = r.replace(/.*enviar .*audio.*(\r?\n)?/gi, "");
 
-  // remove espaços/linhas duplicadas desnecessárias
   r = r.replace(/\n{3,}/g, "\n\n").trim();
 
   return r;
@@ -219,9 +251,6 @@ function limparTextoResposta(txt = "") {
 
 /**
  * Extrai apenas as linhas do idioma alvo para o áudio
- * - inglês: linhas que parecem frases em inglês
- * - francês: linhas que parecem frases em francês
- * Se não encontrar nada, devolve o texto original.
  */
 function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   const linhas = texto
@@ -291,7 +320,6 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
     if (enLines.length > 0) return enLines.join("\n");
   }
 
-  // fallback: devolve tudo se não conseguir separar
   return texto;
 }
 
@@ -331,7 +359,7 @@ function inferirMaiorDificuldade(texto) {
   if (t.includes("vergonha") || t.includes("timido") || t.includes("tímido") || t.includes("medo")) {
     return "medo / vergonha de falar";
   }
-  return texto; // guarda a descrição original se não identificou
+  return texto;
 }
 
 function inferirPreferenciaFormato(texto) {
@@ -353,7 +381,6 @@ function inferirFrequenciaPreferida(texto) {
   if (t.includes("so quando") || t.includes("só quando") || t.includes("quando eu falar") || t.includes("quando falar comigo")) {
     return "livre";
   }
-  // default se não ficou claro: 3x por semana
   return "3x";
 }
 
@@ -362,7 +389,6 @@ function inferirFrequenciaPreferida(texto) {
 function detectarTipoMensagem(textoNorm = "") {
   if (!textoNorm) return "geral";
 
-  // Pedido de tradução / "como se diz"
   const isPedidoTraducao =
     textoNorm.includes("como se diz") ||
     textoNorm.includes("como diz") ||
@@ -381,7 +407,6 @@ function detectarTipoMensagem(textoNorm = "") {
 
   if (isPedidoTraducao) return "pedido_traducao";
 
-  // Perguntas sobre o próprio Kito: nome, quem é, etc.
   const isPerguntaSobreKito =
     textoNorm.includes("qual e o seu nome") ||
     textoNorm.includes("qual o seu nome") ||
@@ -392,7 +417,6 @@ function detectarTipoMensagem(textoNorm = "") {
     textoNorm.includes("quem e voce") ||
     textoNorm.includes("quem é voce") ||
     textoNorm.includes("quem é você") ||
-    textoNorm.includes("quem e voce?") ||
     textoNorm.includes("what is your name") ||
     textoNorm.includes("what's your name") ||
     textoNorm.includes("who are you") ||
@@ -446,6 +470,7 @@ async function saveStudentToFirestore(phone, aluno) {
         frequenciaPreferida: aluno.frequenciaPreferida ?? null,
         objetivo: aluno.objetivo ?? null,
         stage: aluno.stage ?? null,
+        chatMode: aluno.chatMode ?? null, // ✅ NOVO
         messagesCount: aluno.messagesCount ?? 0,
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
@@ -520,157 +545,81 @@ async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
   const step = aluno.moduleStep ?? 0;
   const totalSteps = modulo?.steps ?? 4;
 
+  const modo = aluno.chatMode || "conversa";
+
   const systemPrompt = `
 Tu és o **Kito**, professor oficial da **Jovika Academy**, uma escola moderna de inglês e francês
 para jovens de Angola, Brasil e Portugal. Tu dás aulas pelo WhatsApp, de forma muito humana,
 natural e inteligente (tipo ChatGPT, mas focado em idiomas).
 
+MODO ATUAL DO ALUNO (MUITO IMPORTANTE):
+- chatMode: "${modo}"
+- Se chatMode = "conversa":
+  - O aluno quer praticar falando como se fosse com um humano.
+  - Você DEVE responder primeiro como uma pessoa (fluido e natural).
+  - NÃO faça correção de pronúncia/gramática automaticamente.
+  - No máximo, ofereça no final uma pergunta opcional: "Quer que eu corrija essa frase?"
+- Se chatMode = "aprender":
+  - O aluno quer aprender com correções e explicações.
+  - Você responde e corrige com carinho (sem interromper demais), com exemplos curtos.
+
 IDENTIDADE DO KITO:
 - Nome: Kito
 - Papel: professor de INGLÊS e FRANCÊS da Jovika Academy
 - Estilo: jovem, descontraído, empático, mas muito competente.
-- Gosta de motivar, elogiar quando o aluno acerta e corrigir com carinho quando erra.
 
 PORTUGUÊS DO BRASIL (IMPORTANTE):
 - Escreve sempre em **português do Brasil**, com gramática correta.
 - Usa "você" (não uses "tu") e evita gírias como "pra", "beleza?" ou "bora".
 - Prefere "para", "porque", "tudo bem?", "vamos continuar?", etc.
-- O tom é próximo, simpático e motivador, mas com escrita de professor.
-- Quando escrever frases em francês, faz assim:
+- Quando escrever frases em francês:
   - primeira linha: só a frase em francês;
   - linha seguinte: tradução em português do Brasil.
-  Exemplo:
-  "Je suis fatigué."
-  "Eu estou cansado."
-- Quando escrever frases em inglês, faz assim:
+- Quando escrever frases em inglês:
   - primeira linha: só a frase em inglês;
   - linha seguinte: tradução em português do Brasil.
-  Exemplo:
-  "I am tired."
-  "Eu estou cansado."
-- Evita misturar francês/inglês e português na mesma linha.
 
 PERFIL PEDAGÓGICO DESTE ALUNO:
 - Nome: ${aluno.nome || "não informado"}
 - Idioma alvo: ${idiomaAlvo}
 - Nível aproximado (interno): ${aluno.nivel || "A0"}
-- Nível percebido pelo próprio aluno: ${aluno.nivelPercebido || "não definido"}
-- Maior dificuldade declarada: ${
+- Nível percebido: ${aluno.nivelPercebido || "não definido"}
+- Maior dificuldade: ${
     aluno.maiorDificuldade || "ainda não ficou clara — faça perguntas simples para descobrir."
   }
-- Preferência de formato: ${
-    aluno.preferenciaFormato || "misto"
-  } (entenda: "audio", "texto" ou "misto").
-- Frequência preferida de puxão: ${
-    aluno.frequenciaPreferida ||
-    "não definida — se ainda não estiver claro, pergunte de forma natural."
-  }
-- Objetivo declarado pelo aluno: ${
+- Preferência de formato: ${aluno.preferenciaFormato || "misto"}.
+- Frequência preferida: ${aluno.frequenciaPreferida || "não definida"}.
+- Objetivo: ${
     aluno.objetivo ||
-    "ainda não ficou claro — faça perguntas simples e naturais para entender o que ele realmente precisa (trabalho, viagem, faculdade, imigração, confiança, etc.)."
+    "ainda não ficou claro — faça perguntas simples e naturais para entender o que ele realmente precisa."
   }
 
 MÓDULO ATUAL (APENAS COMO GUIA, NÃO SCRIPT DURO):
 - Título: ${modulo?.title || "Introdução"}
 - Nível do módulo: ${modulo?.level || aluno.nivel || "iniciante"}
-- Objetivo pedagógico do módulo: ${
-    modulo?.goal || "ajudar o aluno a comunicar em situações básicas."
-  }
-- Passo atual (0-based): ${step}
-- Número total de passos no módulo: ${totalSteps}
+- Objetivo do módulo: ${modulo?.goal || "ajudar o aluno a comunicar em situações básicas."}
+- Passo atual: ${step}
+- Total de passos: ${totalSteps}
 
 TIPO DA ÚLTIMA MENSAGEM:
 - tipoMensagem: ${tipoMensagem}
-- Interpretação:
-  - "pedido_traducao" = o aluno pediu explicitamente para saber COMO DIZER algo em inglês/francês, TRADUZIR, ou corrigir uma frase específica.
-  - "pergunta_sobre_kito" = o aluno perguntou sobre você (nome, idade, quem é você, se é humano ou robô, etc.).
-  - "geral" = mensagem de conversa normal, dúvida ou aula.
 
-REGRAS ESPECIAIS PARA ISSO:
-- Se tipoMensagem = "pedido_traducao":
-  - Explique em português do Brasil e dê a frase correta no idioma alvo.
-  - Não transforme a frase do aluno em um parágrafo inteiro em inglês/francês se ele não pediu.
-  - Não responda apenas repetindo a frase dele traduzida; converse, explique e, se fizer sentido, ofereça um exemplo extra.
-- Se tipoMensagem = "pergunta_sobre_kito":
-  - Responda em português do Brasil, como se fosse uma conversa real.
-  - Diga claramente que o seu nome é Kito, que você é o professor de inglês e francês da Jovika Academy e que é uma inteligência artificial treinada para ensinar línguas pelo WhatsApp.
-  - Você pode acrescentar uma ou duas frases em inglês/francês APENAS se o próprio aluno pedir para ouvir isso na outra língua.
+REGRAS POR TIPO:
+- Se tipoMensagem = "pedido_traducao": responda direto, explique e dê a frase correta.
+- Se tipoMensagem = "pergunta_sobre_kito": responda como conversa real em português do Brasil.
 - Se tipoMensagem = "geral":
-  - Priorize responder à pergunta ou comentário do aluno como uma pessoa numa conversa.
-  - Só proponha exercício ou reformule a frase dele se isso fizer sentido no contexto ou se ele pedir correção.
+  - Responda primeiro ao que o aluno disse.
+  - Se chatMode = "conversa", foque em manter o diálogo fluindo.
+  - Se chatMode = "aprender", você pode corrigir e ensinar, mas sem textão.
 
-KITO PROFESSOR HUMANO (ADAPTAÇÃO AO PERFIL):
-- Leia com atenção o histórico de mensagens para perceber:
-  - O que essa pessoa já sabe.
-  - Qual é a dificuldade principal (vocabulário, gramática, pronúncia, medo de falar, vergonha, etc.).
-  - Qual é o objetivo real (trabalho, viagem, estudos, imigração, sair do país, confiança, etc.).
-  - Se o aluno prefere áudio, texto ou uma mistura dos dois.
-- Use tudo isso para adaptar a forma como ensina:
-  - Se a maior dificuldade for pronúncia ou fala, explique com calma e ofereça exemplos curtos que funcionam bem em áudio.
-  - Se a maior dificuldade for gramática, dê explicações simples e poucos exemplos, sem sobrecarregar.
-  - Se for vocabulário, traga palavras úteis ligadas ao objetivo dele.
-  - Se for medo/vergonha de falar, seja mais acolhedor e destaque pequenos progressos.
-- Você não é um "bot de exercícios". Você é um professor particular que conversa, ouve e pensa antes de responder.
-- Antes de mandar exercícios ou várias frases para o aluno repetir:
-  1) Pergunte-se: "O que essa pessoa realmente pediu nesta última mensagem?"
-  2) Se ela só pediu uma tradução ou tirou uma dúvida pontual, responda de forma direta e clara, sem exercício extra obrigatório.
-  3) Só ofereça exercício quando isso fizer sentido e deixe claro que é opcional.
+ESTILO:
+- Mensagens curtas, estilo WhatsApp.
+- No máximo 2 blocos curtos + 1 pergunta.
+- Emojis com moderação (1 no máximo, se fizer sentido).
 
-COMO O KITO PENSA E AGE:
-- Lembra-se do contexto da conversa (histórico) e não repete perguntas iniciais
-  como nome, idioma ou objetivo.
-- Responde exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
-  não como um script engessado.
-- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responda diretamente
-  e só depois, se fizer sentido, ofereça um pequeno exercício relacionado.
-- Se o aluno disser palavras soltas de objetivo ("trabalho", "confiança", "Canadá", "emprego"),
-  você:
-    - NÃO fica só traduzindo a palavra.
-    - Explica como esse objetivo se relaciona com o idioma e com o que ele precisa aprender.
-    - Propõe um pequeno exercício ou frase relacionada a esse objetivo, mas sempre conectada ao que ele acabou de falar.
-- Quando o aluno responde só "sim", "ok", "vamos", "tá bem", interprete isso como confirmação para dar o próximo micro-passo, MAS ainda assim responda de forma natural, não mecânica.
-
-ESTILO DE RESPOSTA:
-- Escreve como se fosse mensagem de WhatsApp:
-  - Frases curtas
-  - Parágrafos curtos
-  - Linguagem simples e direta
-- Usa emojis com moderação (1–2 no máximo por mensagem), só se fizer sentido.
-- Nunca mande textão enorme. No máximo 3 blocos:
-  1) Explicação rápida (contexto + conceito)
-  2) 2–3 exemplos com tradução, se necessário
-  3) Um mini exercício opcional (1 ou 2 frases, gap-fill, escolha, etc.), apenas se encaixar no momento.
-- Quando não fizer sentido exercício, termine com uma pergunta simples do tipo:
-  - "Isso fez sentido para você?"
-  - "Quer que eu te dê mais um exemplo?"
-  - "Você quer praticar isso com um exercício rapidinho?"
-
-SOBRE ÁUDIO (MUITO IMPORTANTE):
-- Você consegue enviar áudios curtos de voz sintetizada quando o aluno pede.
-- **NUNCA** diga frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
-- **NUNCA** escreva tags como "[Áudio enviado]" ou "[audio enviado]" nem use prefixos como "(Áudio)" ou "Áudio:".
-- **NÃO** diga "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
-- Quando o aluno pedir para ouvir algo em áudio (pronúncia, frases, explicação, diálogo, etc.):
-  1) Responda normalmente em texto (explicação + exemplos +, se fizer sentido, um mini exercício).
-  2) No final da mensagem, faça **uma pergunta de preferência**, por exemplo:
-     - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
-
-CORREÇÃO DE ERROS:
-- Quando o aluno erra:
-  - Mostre a frase original dele.
-  - Mostre a versão corrigida.
-  - Faça uma explicação rápida do porquê (sem excesso de gramática pesada).
-- Mantenha o tom positivo. Nada de "está errado", prefira "ficaria melhor assim" ou "podemos ajustar assim".
-
-TOM EMOCIONAL:
-- Se o aluno demonstrar dificuldade, desmotivação ou cansaço, responda de forma
-  mais acolhedora e estimule a continuar devagar.
-- Se o aluno estiver empolgado, acompanhe essa energia e puxe um pouco mais.
-
-RESUMO:
-Você é o Kito, uma espécie de "ChatGPT-professor de idiomas" da Jovika Academy:
-inteligente, adaptável, humano, e sempre focado em fazer o aluno realmente
-falar o idioma, não só decorar regras ou repetir frases soltas.
+SOBRE ÁUDIO:
+- Não diga "vou mandar áudio" nem "[Áudio enviado]".
+- O sistema decide o envio do áudio.
   `.trim();
 
   const mensagens = [
@@ -694,7 +643,7 @@ falar o idioma, não só decorar regras ou repetir frases soltas.
   return textoLimpo;
 }
 
-/** ---------- ÁUDIO: download + transcrição (para entender o que o aluno falou) ---------- **/
+/** ---------- ÁUDIO: download + transcrição ---------- **/
 
 async function downloadToTempFile(fileUrl) {
   const cleanUrl = fileUrl.split("?")[0];
@@ -712,10 +661,11 @@ async function transcreverAudio(audioUrl) {
     console.log("🎧 Transcrevendo áudio:", audioUrl);
     const tempPath = await downloadToTempFile(audioUrl);
 
+    // ✅ Importante: NÃO forçar language="pt"
+    // porque muitos alunos vão falar inglês/francês no áudio.
     const transcription = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
       file: fs.createReadStream(tempPath),
-      language: "pt",
     });
 
     fs.promises.unlink(tempPath).catch(() => {});
@@ -731,11 +681,11 @@ async function transcreverAudio(audioUrl) {
   }
 }
 
-/** ---------- ÁUDIO: TTS (responder com áudio quando o aluno pedir) ---------- **/
+/** ---------- ÁUDIO: TTS ---------- **/
 
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
-    console.log("🎙️ Gerando áudio de resposta do Kito (sob pedido)...");
+    console.log("🎙️ Gerando áudio de resposta do Kito...");
 
     let instructions;
 
@@ -748,14 +698,13 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
       instructions =
         "Parle en français standard de France, avec une voix masculine naturelle. Parle lentement et très clairement, idéal pour les débutants. Ne parle pas portugais ou anglais.";
     } else {
-      // fallback genérico (PT-BR + FR se aparecer)
       instructions =
         "When the text is in Portuguese, speak Brazilian Portuguese with a clear, natural MALE voice. When the text is in French, pronounce it with a standard metropolitan French accent (France), slow and very clear, ideal for language learners.";
     }
 
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "onyx", // voz masculina fixa
+      voice: process.env.OPENAI_TTS_VOICE || "onyx",
       instructions,
       input: texto,
       response_format: "mp3",
@@ -808,7 +757,7 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
-/** ---------- Enviar ÁUDIO pela Z-API (sob pedido) ---------- **/
+/** ---------- Enviar ÁUDIO pela Z-API ---------- **/
 
 async function enviarAudioWhatsApp(phone, audioBase64) {
   try {
@@ -827,7 +776,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
 
     const payload = {
       phone,
-      audio: audioBase64, // "data:audio/mpeg;base64,AAAA..."
+      audio: audioBase64,
       viewOnce: false,
       waveform: true,
     };
@@ -845,7 +794,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
   }
 }
 
-/** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
+/** ---------- LÓGICA PRINCIPAL DE MENSAGEM ---------- **/
 
 async function processarMensagemAluno({
   numeroAluno,
@@ -868,6 +817,7 @@ async function processarMensagemAluno({
         preferenciaFormato: fromDb.preferenciaFormato || null,
         frequenciaPreferida: fromDb.frequenciaPreferida || null,
         objetivo: fromDb.objetivo || null,
+        chatMode: fromDb.chatMode || null, // ✅ NOVO
       };
       students[numeroAluno] = aluno;
     }
@@ -885,6 +835,7 @@ async function processarMensagemAluno({
       preferenciaFormato: null,
       frequenciaPreferida: null,
       objetivo: null,
+      chatMode: null, // ✅ NOVO
       messagesCount: 0,
       createdAt: agora,
       lastMessageAt: agora,
@@ -907,7 +858,7 @@ async function processarMensagemAluno({
     return;
   }
 
-  // Atualiza stats e reseta lembretes (porque o aluno voltou a falar)
+  // Atualiza stats e reseta lembretes
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.reminder1hSentAt = null;
@@ -916,6 +867,21 @@ async function processarMensagemAluno({
 
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
+
+  // ✅ Permitir troca de modo a qualquer momento (somente quando já está em learning/ask_mode)
+  const comandoModo = detectarComandoModo(texto || "");
+  if (comandoModo && aluno.stage !== "ask_name" && aluno.stage !== "ask_language") {
+    aluno.chatMode = comandoModo;
+    const msgModo =
+      comandoModo === "conversa"
+        ? "Perfeito 😊 A partir de agora a gente conversa para você praticar. Se quiser que eu corrija tudo, é só dizer: modo aprender."
+        : "Combinado 💪 A partir de agora eu vou te ensinar e corrigir enquanto a gente conversa. Se quiser só praticar sem correção, diga: modo conversa.";
+    aluno.history.push({ role: "assistant", content: msgModo });
+    await enviarMensagemWhatsApp(numeroAluno, msgModo);
+    students[numeroAluno] = aluno;
+    await saveStudentToFirestore(numeroAluno, aluno);
+    return;
+  }
 
   // 1) Perguntar / guardar nome
   if (aluno.stage === "ask_name" && !aluno.nome) {
@@ -952,11 +918,10 @@ async function processarMensagemAluno({
 
       await enviarMensagemWhatsApp(
         numeroAluno,
-        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\nAntes de começar a aula, quero te conhecer um pouco melhor para adaptar tudo ao seu perfil.\n\nVocê já estudou ${idiomaTexto} antes? Pode responder algo como:\n- "Nunca estudei"\n- "Já estudei um pouco"\n- "Já tenho uma base boa".`
+        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\nAntes de começar a aula, quero te conhecer um pouco melhor para adaptar tudo ao seu perfil.\n\nVocê já estudou ${idiomaTexto} antes?`
       );
     }
   } else if (aluno.stage === "ask_experience") {
-    // 3) Já estudou antes?
     const { nivelPercebido, nivelCEFR } = inferirNivelPercebido(texto);
     aluno.nivelPercebido = nivelPercebido;
     aluno.nivel = aluno.nivel || nivelCEFR;
@@ -967,19 +932,17 @@ async function processarMensagemAluno({
       numeroAluno,
       `Perfeito, entendi. 😊\nAgora me conta: em ${
         aluno.idioma === "frances" ? "francês" : "inglês"
-      }, o que você sente que é mais difícil para você hoje?\n\nPor exemplo: pronúncia, gramática, vocabulário, escutar, vergonha de falar...`
+      }, o que você sente que é mais difícil hoje?\n\nPronúncia, gramática, vocabulário, escutar, vergonha de falar...`
     );
   } else if (aluno.stage === "ask_difficulty") {
-    // 4) Maior dificuldade
     aluno.maiorDificuldade = inferirMaiorDificuldade(texto);
     aluno.stage = "ask_preference_format";
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      "Ótimo, obrigado por compartilhar isso comigo. 😊\nOutra coisa importante: você prefere que eu explique mais por áudio, por mensagem escrita ou misturando os dois?"
+      "Ótimo, obrigado por compartilhar isso comigo. 😊\nVocê prefere que eu explique mais por áudio, por mensagem escrita ou misturando os dois?"
     );
   } else if (aluno.stage === "ask_preference_format") {
-    // 5) Preferência de formato
     aluno.preferenciaFormato = inferirPreferenciaFormato(texto);
     aluno.stage = "ask_frequency";
 
@@ -988,28 +951,51 @@ async function processarMensagemAluno({
       "Show! Para eu organizar melhor os seus estudos:\nVocê prefere que eu te puxe todos os dias, 3x por semana ou só quando você falar comigo?"
     );
   } else if (aluno.stage === "ask_frequency") {
-    // 6) Frequência de lembrete
     aluno.frequenciaPreferida = inferirFrequenciaPreferida(texto);
-    aluno.stage = "learning";
 
-    const idiomaTexto =
-      aluno.idioma === "ingles"
-        ? "inglês"
-        : aluno.idioma === "frances"
-        ? "francês"
-        : "inglês e francês";
+    // ✅ NOVO PASSO: escolher modo (conversa/aprender)
+    aluno.stage = "ask_mode";
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      `Maravilha, combinado! 😄\nAgora a última coisa para eu te acompanhar bem:\nQual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
+      "Antes de começarmos: você quer que eu seja mais como um parceiro de conversa (para praticar) ou como professor corrigindo?\n\nResponda com:\n1) conversar\n2) aprender\n\nVocê pode mudar quando quiser dizendo: modo conversa / modo aprender."
     );
+  } else if (aluno.stage === "ask_mode") {
+    const t = normalizarTexto(texto);
+    const escolheuConversa =
+      t.includes("1") || t.includes("convers") || t.includes("pratic");
+    const escolheuAprender =
+      t.includes("2") || t.includes("aprender") || t.includes("estudar") || t.includes("corrig");
+
+    if (!escolheuConversa && !escolheuAprender) {
+      await enviarMensagemWhatsApp(
+        numeroAluno,
+        "Só para eu acertar seu estilo 😊\nResponda com:\n1) conversar\n2) aprender"
+      );
+    } else {
+      aluno.chatMode = escolheuAprender ? "aprender" : "conversa";
+      aluno.stage = "learning";
+
+      const idiomaTexto =
+        aluno.idioma === "ingles"
+          ? "inglês"
+          : aluno.idioma === "frances"
+          ? "francês"
+          : "inglês e francês";
+
+      await enviarMensagemWhatsApp(
+        numeroAluno,
+        aluno.chatMode === "conversa"
+          ? `Perfeito 😊 A gente vai conversar para você praticar ${idiomaTexto}. Se quiser correção completa, diga: modo aprender.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
+          : `Combinado 💪 Eu vou te ensinar e corrigir enquanto a gente conversa em ${idiomaTexto}. Se quiser só praticar sem correção, diga: modo conversa.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
+      );
+    }
   } else {
-    // 7) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
+    // 7) Fase de aprendizagem
     if (aluno.stage !== "learning") {
       aluno.stage = "learning";
     }
 
-    // Se ainda não registou o objetivo, assume que esta mensagem é isso
     if (!aluno.objetivo) {
       aluno.objetivo = texto;
       console.log("🎯 Objetivo do aluno registrado:", aluno.objetivo);
@@ -1019,47 +1005,46 @@ async function processarMensagemAluno({
     const tipoMensagem = detectarTipoMensagem(textoNorm);
 
     const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
-
     const trilha = learningPath[idiomaChave] || learningPath["ingles"];
+
     let moduleIndex = aluno.moduleIndex ?? 0;
     let moduleStep = aluno.moduleStep ?? 0;
 
-    let moduloAtual = trilha[moduleIndex] || trilha[0];
+    if (moduleIndex >= trilha.length) moduleIndex = trilha.length - 1;
+    const moduloAtual = trilha[moduleIndex] || trilha[0];
 
     const confirmacao = isConfirmMessage(texto);
-    if (confirmacao) {
-      console.log("✅ Confirmação de continuar módulo recebida.");
-    }
+    if (confirmacao) console.log("✅ Confirmação de continuar módulo recebida.");
 
-    if (moduleIndex >= trilha.length) {
-      moduleIndex = trilha.length - 1;
-    }
-    moduloAtual = trilha[moduleIndex];
+    const querAudioPorPedido = userQuerAudio(texto, isAudio);
 
-    const querAudio = userQuerAudio(texto, isAudio);
+    // ✅ ESPELHAR ÁUDIO (somente em modo conversa)
+    const chatMode = aluno.chatMode || "conversa";
+    const espelharAudio =
+      isAudio && chatMode === "conversa";
+
     const pediuExercicioEmAudio =
-      querAudio &&
+      querAudioPorPedido &&
       (textoNorm.includes("exercicio") ||
         textoNorm.includes("exercício") ||
         textoNorm.includes("exercicios") ||
         textoNorm.includes("exercícios"));
 
-    console.log("DEBUG_QUER_AUDIO:", {
-      texto,
+    console.log("DEBUG_AUDIO_POLICY:", {
       isAudio,
-      querAudio,
+      chatMode,
+      espelharAudio,
+      querAudioPorPedido,
       pediuExercicioEmAudio,
       tipoMensagem,
     });
 
-    // idioma alvo para áudio (o que o aluno está a estudar)
     const idiomaAudioAlvo =
       aluno.idioma === "ingles" || aluno.idioma === "frances"
         ? aluno.idioma
         : null;
 
     if (pediuExercicioEmAudio) {
-      // Caso especial: "envia o exercício em áudio"
       const lastAssistant =
         [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
         null;
@@ -1079,29 +1064,21 @@ async function processarMensagemAluno({
       }
 
       const msgConfirm =
-        "Pronto! Enviei o exercício em áudio para você ouvir e praticar. Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
+        "Pronto! Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
 
       aluno.history.push({ role: "assistant", content: msgConfirm });
       await sleep(800);
       await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
     } else {
-      // Fluxo normal
-      const respostaKito = await gerarRespostaKito(
-        aluno,
-        moduloAtual,
-        tipoMensagem
-      );
+      const respostaKito = await gerarRespostaKito(aluno, moduloAtual, tipoMensagem);
 
-      // Avança micro-passos do módulo APENAS quando o aluno confirma continuar
       if (confirmacao) {
         moduleStep += 1;
         const totalSteps = moduloAtual.steps || 4;
         if (moduleStep >= totalSteps) {
           moduleIndex += 1;
           moduleStep = 0;
-          if (moduleIndex >= trilha.length) {
-            moduleIndex = trilha.length - 1;
-          }
+          if (moduleIndex >= trilha.length) moduleIndex = trilha.length - 1;
         }
       }
 
@@ -1110,16 +1087,14 @@ async function processarMensagemAluno({
 
       aluno.history.push({ role: "assistant", content: respostaKito });
 
-      // ÁUDIO SOB PEDIDO (explicações / frases)
-      if (querAudio) {
-        const textoParaAudio = extrairTrechoParaAudio(
-          respostaKito,
-          idiomaAudioAlvo
-        );
-        const audioBase64 = await gerarAudioRespostaKito(
-          textoParaAudio,
-          idiomaAudioAlvo
-        );
+      // ✅ Política de áudio:
+      // - Se espelharAudio (áudio recebido + modo conversa) => manda áudio SEM o aluno pedir
+      // - Se querAudioPorPedido => manda áudio sob pedido (como já era)
+      const deveMandarAudio = espelharAudio || querAudioPorPedido;
+
+      if (deveMandarAudio) {
+        const trecho = extrairTrechoParaAudio(respostaKito, idiomaAudioAlvo);
+        const audioBase64 = await gerarAudioRespostaKito(trecho, idiomaAudioAlvo);
         if (audioBase64) {
           await enviarAudioWhatsApp(numeroAluno, audioBase64);
         }
@@ -1138,7 +1113,7 @@ async function processarMensagemAluno({
 
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
-const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000; // a cada 5 minutos
+const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 function getIdiomaTexto(idioma) {
   if (idioma === "ingles") return "inglês";
@@ -1152,8 +1127,6 @@ async function verificarELancarLembretes() {
 
   for (const [numero, aluno] of Object.entries(students)) {
     if (!aluno.lastMessageAt) continue;
-
-    // Se o aluno escolheu "só quando você falar comigo", não envia lembretes
     if (aluno.frequenciaPreferida === "livre") continue;
 
     const diff = agora - new Date(aluno.lastMessageAt);
@@ -1162,9 +1135,8 @@ async function verificarELancarLembretes() {
 
     const afterLast = (d) => !d || new Date(d) < new Date(aluno.lastMessageAt);
 
-    // Lembrete de 2 dias
     if (diff >= TWO_DAYS_MS && afterLast(aluno.reminder2dSentAt)) {
-      const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar a sua aula agora comigo?`;
+      const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar agora?`;
       console.log("⏰ Lembrete 2 dias para", numero);
       aluno.reminder2dSentAt = agora;
       await enviarMensagemWhatsApp(numero, msg2d);
@@ -1172,13 +1144,8 @@ async function verificarELancarLembretes() {
       continue;
     }
 
-    // Lembrete de 1 hora
-    if (
-      diff >= ONE_HOUR_MS &&
-      diff < TWO_DAYS_MS &&
-      afterLast(aluno.reminder1hSentAt)
-    ) {
-      const msg1h = `Oi, ${nome}! 😄 Só passando para saber se você quer continuar a sua aula de ${idiomaTexto} agora. Se quiser, é só me mandar uma mensagem e seguimos do ponto onde paramos.`;
+    if (diff >= ONE_HOUR_MS && diff < TWO_DAYS_MS && afterLast(aluno.reminder1hSentAt)) {
+      const msg1h = `Oi, ${nome}! 😄 Você quer continuar sua prática de ${idiomaTexto} agora? Se quiser, é só me mandar uma mensagem e seguimos do ponto onde paramos.`;
       console.log("⏰ Lembrete 1h para", numero);
       aluno.reminder1hSentAt = agora;
       await enviarMensagemWhatsApp(numero, msg1h);
@@ -1187,7 +1154,6 @@ async function verificarELancarLembretes() {
   }
 }
 
-// Inicia o loop de lembretes
 setInterval(verificarELancarLembretes, REMINDER_CHECK_INTERVAL_MS);
 
 /** ---------- WEBHOOK Z-API ---------- **/
@@ -1220,14 +1186,12 @@ app.post("/zapi-webhook", async (req, res) => {
       audio: data.audio,
     });
 
-    // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
       console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
       return res.status(200).send("duplicate_ignored");
     }
     processedMessages.add(msgId);
 
-    // 2ª defesa: mesmo momment
     if (momentVal && lastMomentByPhone[numeroAluno] === momentVal) {
       console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
       return res.status(200).send("duplicate_moment_ignored");
@@ -1236,15 +1200,10 @@ app.post("/zapi-webhook", async (req, res) => {
       lastMomentByPhone[numeroAluno] = momentVal;
     }
 
-    // 3ª defesa: mesmo texto em <3s
     const agora = Date.now();
     const ultimo = lastTextByPhone[numeroAluno];
     if (texto && ultimo && ultimo.text === texto && agora - ultimo.time < 3000) {
-      console.log(
-        "⚠️ Mensagem duplicada ignorada (texto + tempo):",
-        msgId,
-        texto
-      );
+      console.log("⚠️ Mensagem duplicada ignorada (texto + tempo):", msgId, texto);
       return res.status(200).send("duplicate_text_recent");
     }
     if (texto) {
@@ -1258,15 +1217,13 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("no_text_or_audio");
     }
 
-    // Só áudio → transcreve e trata como texto vindo de áudio
     if (audioUrl && !texto) {
       const transcricao = await transcreverAudio(audioUrl);
 
       if (!transcricao) {
         await enviarMensagemWhatsApp(
           numeroAluno,
-          "Tentei ouvir o seu áudio mas não consegui transcrever bem 😅\n" +
-            "Você pode tentar falar um pouco mais perto do microfone ou enviar de novo?"
+          "Tentei ouvir o seu áudio mas não consegui transcrever bem 😅\nVocê pode tentar falar um pouco mais perto do microfone ou enviar de novo?"
         );
         return res.status(200).send("audio_transcription_failed");
       }
@@ -1281,7 +1238,6 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("ok_audio");
     }
 
-    // Mensagem de texto normal
     await processarMensagemAluno({
       numeroAluno,
       texto,
@@ -1314,6 +1270,7 @@ app.get("/admin/dashboard", (req, res) => {
     nivel: dados.nivel || "-",
     mensagens: dados.messagesCount || 0,
     stage: dados.stage,
+    chatMode: dados.chatMode || "-", // ✅ NOVO
     moduleIndex: dados.moduleIndex ?? 0,
     moduleStep: dados.moduleStep ?? 0,
     createdAt: dados.createdAt,
@@ -1347,18 +1304,9 @@ app.get("/admin/dashboard", (req, res) => {
       color: #e5e7eb;
       padding: 24px;
     }
-    h1 {
-      font-size: 24px;
-      margin-bottom: 8px;
-    }
-    h2 {
-      font-size: 18px;
-      margin: 24px 0 12px;
-    }
-    .subtitle {
-      color: #9ca3af;
-      margin-bottom: 20px;
-    }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    h2 { font-size: 18px; margin: 24px 0 12px; }
+    .subtitle { color: #9ca3af; margin-bottom: 20px; }
     .cards {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1378,36 +1326,17 @@ app.get("/admin/dashboard", (req, res) => {
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
-    .card-value {
-      font-size: 22px;
-      font-weight: 600;
-    }
-    .card-sub {
-      font-size: 12px;
-      color: #9ca3af;
-      margin-top: 4px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 8px;
-      font-size: 13px;
-    }
+    .card-value { font-size: 22px; font-weight: 600; }
+    .card-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
     th, td {
       padding: 8px 10px;
       text-align: left;
       border-bottom: 1px solid #1f2937;
       vertical-align: top;
     }
-    th {
-      background: #111827;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    tr:nth-child(even) td {
-      background: #020617;
-    }
+    th { background: #111827; position: sticky; top: 0; z-index: 1; }
+    tr:nth-child(even) td { background: #020617; }
     .badge {
       display: inline-flex;
       align-items: center;
@@ -1416,18 +1345,9 @@ app.get("/admin/dashboard", (req, res) => {
       font-size: 11px;
       font-weight: 500;
     }
-    .badge-en {
-      background: rgba(56, 189, 248, 0.15);
-      color: #7dd3fc;
-    }
-    .badge-fr {
-      background: rgba(251, 191, 36, 0.15);
-      color: #facc15;
-    }
-    .badge-both {
-      background: rgba(52, 211, 153, 0.15);
-      color: #6ee7b7;
-    }
+    .badge-en { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+    .badge-fr { background: rgba(251, 191, 36, 0.15); color: #facc15; }
+    .badge-both { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; }
     .stage-pill {
       font-size: 11px;
       padding: 2px 8px;
@@ -1436,13 +1356,6 @@ app.get("/admin/dashboard", (req, res) => {
       color: #e5e7eb;
       display: inline-block;
     }
-    .stage-pill.ask_name { color: #f97316; }
-    .stage-pill.ask_language { color: #22c55e; }
-    .stage-pill.ask_experience { color: #a855f7; }
-    .stage-pill.ask_difficulty { color: #facc15; }
-    .stage-pill.ask_preference_format { color: #ec4899; }
-    .stage-pill.ask_frequency { color: #22c55e; }
-    .stage-pill.learning { color: #38bdf8; }
     .table-wrapper {
       max-height: 60vh;
       overflow: auto;
@@ -1465,18 +1378,9 @@ app.get("/admin/dashboard", (req, res) => {
       border: 1px solid #1f2937;
       color: #9ca3af;
     }
-    .footer {
-      margin-top: 24px;
-      font-size: 11px;
-      color: #6b7280;
-    }
-    a {
-      color: #38bdf8;
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
+    .footer { margin-top: 24px; font-size: 11px; color: #6b7280; }
+    a { color: #38bdf8; text-decoration: none; }
+    a:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -1510,10 +1414,7 @@ app.get("/admin/dashboard", (req, res) => {
     </div>
     <div class="card">
       <div class="card-title">Mensagens totais (soma)</div>
-      <div class="card-value">${alunos.reduce(
-        (sum, a) => sum + (a.mensagens || 0),
-        0
-      )}</div>
+      <div class="card-value">${alunos.reduce((sum, a) => sum + (a.mensagens || 0), 0)}</div>
       <div class="card-sub">Total de mensagens recebidas de todos os alunos</div>
     </div>
   </div>
@@ -1528,6 +1429,7 @@ app.get("/admin/dashboard", (req, res) => {
           <th>Idioma</th>
           <th>Nível</th>
           <th>Stage</th>
+          <th>Modo</th>
           <th>Módulo</th>
           <th>Msgs</th>
           <th>Entrou em</th>
@@ -1537,7 +1439,7 @@ app.get("/admin/dashboard", (req, res) => {
       <tbody>
         ${
           alunos.length === 0
-            ? `<tr><td colspan="9">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
+            ? `<tr><td colspan="10">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
             : alunos
                 .map((a) => {
                   let idiomaBadge = `<span class="badge">${a.idioma}</span>`;
@@ -1555,7 +1457,8 @@ app.get("/admin/dashboard", (req, res) => {
                     <td>${a.numero}</td>
                     <td>${idiomaBadge}</td>
                     <td>${a.nivel}</td>
-                    <td><span class="stage-pill ${a.stage}">${a.stage}</span></td>
+                    <td><span class="stage-pill">${a.stage}</span></td>
+                    <td>${a.chatMode}</td>
                     <td>Mód ${a.moduleIndex + 1} · Passo ${a.moduleStep + 1}</td>
                     <td>${a.mensagens}</td>
                     <td>${formatDate(a.createdAt)}</td>
@@ -1570,9 +1473,7 @@ app.get("/admin/dashboard", (req, res) => {
   </div>
 
   <div class="footer">
-    Endpoint JSON também disponível em <code>/admin/stats?token=${
-      process.env.ADMIN_TOKEN || "TOKEN"
-    }</code> · Jovika Academy · Professor Kito · ${new Date().getFullYear()}
+    Endpoint JSON também disponível em <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Jovika Academy · ${new Date().getFullYear()}
   </div>
 </body>
 </html>
@@ -1594,6 +1495,7 @@ app.get("/admin/stats", (req, res) => {
     nome: dados.nome,
     idioma: dados.idioma,
     nivel: dados.nivel,
+    chatMode: dados.chatMode || null,
     mensagens: dados.messagesCount || 0,
     stage: dados.stage,
     moduleIndex: dados.moduleIndex ?? 0,
@@ -1617,13 +1519,13 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA HUMANA) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + CONVERSA HUMANA) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`
   );
 });

@@ -1,6 +1,6 @@
 // server.js – Kito, professor da Jovika Academy
-// Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO + LEMBRETES PERSONALIZADOS
-// + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO EM MODO CONVERSA
+// Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO + PERFIL PEDAGÓGICO
+// + LEMBRETES PERSONALIZADOS POR FREQUÊNCIA + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO EM MODO CONVERSA
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -14,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v5.3 – MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES 🔥🔥🔥"
+  "🔥🔥🔥 KITO v5.4 – LEMBRETES POR FREQUÊNCIA + MICRO-VITÓRIAS + MODO CONVERSA/APRENDER + ÁUDIO 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -35,50 +35,14 @@ const lastTextByPhone = {};
 
 const learningPath = {
   ingles: [
-    {
-      id: "en_a0_1",
-      title: "Cumprimentos e apresentações",
-      level: "A0",
-      steps: 4,
-      goal: "Aprender a dizer olá, despedir-se e apresentar-se de forma simples.",
-    },
-    {
-      id: "en_a0_2",
-      title: "Falar sobre idade, cidade e país",
-      level: "A0",
-      steps: 4,
-      goal: "Conseguir dizer a idade, de onde é e onde vive.",
-    },
-    {
-      id: "en_a0_3",
-      title: "Rotina diária simples",
-      level: "A1",
-      steps: 4,
-      goal: "Descrever a rotina do dia a dia com frases básicas no presente simples.",
-    },
+    { id: "en_a0_1", title: "Cumprimentos e apresentações", level: "A0", steps: 4, goal: "Aprender a dizer olá, despedir-se e apresentar-se de forma simples." },
+    { id: "en_a0_2", title: "Falar sobre idade, cidade e país", level: "A0", steps: 4, goal: "Conseguir dizer a idade, de onde é e onde vive." },
+    { id: "en_a0_3", title: "Rotina diária simples", level: "A1", steps: 4, goal: "Descrever a rotina do dia a dia com frases básicas no presente simples." },
   ],
   frances: [
-    {
-      id: "fr_a0_1",
-      title: "Cumprimentos básicos em francês",
-      level: "A0",
-      steps: 4,
-      goal: "Cumprimentar, despedir-se e dizer como está em francês.",
-    },
-    {
-      id: "fr_a0_2",
-      title: "Apresentar-se em francês",
-      level: "A0",
-      steps: 4,
-      goal: "Dizer o nome, idade e país em francês.",
-    },
-    {
-      id: "fr_a0_3",
-      title: "Rotina simples em francês",
-      level: "A1",
-      steps: 4,
-      goal: "Descrever o dia a dia com verbos básicos em francês.",
-    },
+    { id: "fr_a0_1", title: "Cumprimentos básicos em francês", level: "A0", steps: 4, goal: "Cumprimentar, despedir-se e dizer como está em francês." },
+    { id: "fr_a0_2", title: "Apresentar-se em francês", level: "A0", steps: 4, goal: "Dizer o nome, idade e país em francês." },
+    { id: "fr_a0_3", title: "Rotina simples em francês", level: "A1", steps: 4, goal: "Descrever o dia a dia com verbos básicos em francês." },
   ],
 };
 
@@ -110,20 +74,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Detecta respostas tipo "sim", "bora", "vamos", "quero"
 function isConfirmMessage(texto = "") {
   const t = normalizarTexto(texto);
-  const palavras = [
-    "sim",
-    "bora",
-    "vamos",
-    "quero",
-    "claro",
-    "ok",
-    "tá bem",
-    "esta bem",
-    "ta bem",
-  ];
+  const palavras = ["sim", "bora", "vamos", "quero", "claro", "ok", "tá bem", "esta bem", "ta bem"];
   return palavras.some((p) => t === p || t.includes(p));
 }
 
@@ -141,52 +94,26 @@ function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
 
   const gatilhos = [
-    "manda audio",
-    "manda áudio",
-    "manda um audio",
-    "manda um áudio",
-    "envia audio",
-    "envia um audio",
-    "envia um áudio",
-    "envia audio por favor",
-    "mensagem de voz",
-    "msg de voz",
-    "manda voz",
-    "fala por audio",
-    "fala por áudio",
-    "responde em audio",
-    "responde em áudio",
-    "fala em audio",
-    "fala em áudio",
-    "so em audio",
-    "só em audio",
-    "so em áudio",
-    "só em áudio",
-    "le em voz alta",
-    "lê em voz alta",
-    "read it aloud",
-    "say it",
-    "fala devagar em ingles",
-    "fala devagar em inglês",
-    "fala devagar em frances",
-    "fala devagar em francês",
-    "pronuncia",
-    "pronúncia",
-    "áudio",
-    "audio",
+    "manda audio", "manda áudio", "manda um audio", "manda um áudio",
+    "envia audio", "envia um audio", "envia um áudio", "envia audio por favor",
+    "mensagem de voz", "msg de voz", "manda voz",
+    "fala por audio", "fala por áudio", "responde em audio", "responde em áudio",
+    "fala em audio", "fala em áudio",
+    "so em audio", "só em audio", "so em áudio", "só em áudio",
+    "le em voz alta", "lê em voz alta",
+    "read it aloud", "say it",
+    "fala devagar em ingles", "fala devagar em inglês",
+    "fala devagar em frances", "fala devagar em francês",
+    "pronuncia", "pronúncia", "áudio", "audio",
   ];
 
   const pediuPorTexto = gatilhos.some((p) => t.includes(p));
 
   const pediuPorAudio =
     isAudio &&
-    (t.includes("pronun") ||
-      t.includes("pronún") ||
-      t.includes("corrig") ||
-      gatilhos.some((p) => t.includes(p)));
+    (t.includes("pronun") || t.includes("pronún") || t.includes("corrig") || gatilhos.some((p) => t.includes(p)));
 
-  const resultado = pediuPorTexto || pediuPorAudio;
-  return resultado;
+  return pediuPorTexto || pediuPorAudio;
 }
 
 // 🧠 Detecta comando para trocar modo (conversa/aprender)
@@ -194,37 +121,21 @@ function detectarComandoModo(texto = "") {
   const t = normalizarTexto(texto);
 
   const querConversa =
-    t.includes("modo conversa") ||
-    t.includes("modo convers") ||
-    t === "conversa" ||
-    t.includes("só conversar") ||
-    t.includes("so conversar") ||
-    t.includes("vamos conversar") ||
-    t.includes("apenas conversar") ||
-    t.includes("quero conversar") ||
-    t.includes("praticar conversacao") ||
-    t.includes("praticar conversação") ||
-    t.includes("praticar falando");
+    t.includes("modo conversa") || t.includes("modo convers") || t === "conversa" ||
+    t.includes("só conversar") || t.includes("so conversar") ||
+    t.includes("vamos conversar") || t.includes("apenas conversar") || t.includes("quero conversar") ||
+    t.includes("praticar conversacao") || t.includes("praticar conversação") || t.includes("praticar falando");
 
   const querAprender =
-    t.includes("modo aprender") ||
-    t.includes("modo aula") ||
-    t.includes("modo professor") ||
-    t === "aprender" ||
-    t.includes("quero aprender") ||
-    t.includes("quero estudar") ||
-    t.includes("vamos estudar") ||
-    t.includes("me corrige") ||
-    t.includes("me corrija") ||
-    t.includes("corrige tudo") ||
-    t.includes("corrigir tudo");
+    t.includes("modo aprender") || t.includes("modo aula") || t.includes("modo professor") || t === "aprender" ||
+    t.includes("quero aprender") || t.includes("quero estudar") || t.includes("vamos estudar") ||
+    t.includes("me corrige") || t.includes("me corrija") || t.includes("corrige tudo") || t.includes("corrigir tudo");
 
   if (querConversa) return "conversa";
   if (querAprender) return "aprender";
   return null;
 }
 
-// Limpa coisas que não queremos que apareçam/lêem
 function limparTextoResposta(txt = "") {
   if (!txt) return "";
   let r = txt;
@@ -245,13 +156,9 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/.*enviar .*audio.*(\r?\n)?/gi, "");
 
   r = r.replace(/\n{3,}/g, "\n\n").trim();
-
   return r;
 }
 
-/**
- * Extrai apenas as linhas do idioma alvo para o áudio
- */
 function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   const linhas = texto
     .split("\n")
@@ -262,24 +169,7 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
 
   if (idiomaAlvo === "frances") {
     const frAccents = /[àâçéèêëîïôùûüÿœ]/i;
-    const frKeywords = [
-      "je ",
-      "j'",
-      "tu ",
-      "il ",
-      "elle ",
-      "nous ",
-      "vous ",
-      "ils ",
-      "elles ",
-      "bonjour",
-      "bonsoir",
-      "merci",
-      "comment ça va",
-      "comment ca va",
-      "ça va",
-      "ca va",
-    ];
+    const frKeywords = ["je ", "j'", "tu ", "il ", "elle ", "nous ", "vous ", "ils ", "elles ", "bonjour", "bonsoir", "merci", "comment ça va", "comment ca va", "ça va", "ca va"];
     const frLines = linhas.filter((l) => {
       const t = l.toLowerCase();
       return frAccents.test(l) || frKeywords.some((k) => t.startsWith(k));
@@ -290,32 +180,10 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   if (idiomaAlvo === "ingles") {
     const hasLatin = /[a-z]/i;
     const ptAccents = /[áãâàéêíóôõúç]/i;
-    const enKeywords = [
-      "i ",
-      "i'm",
-      "i am",
-      "you ",
-      "you are",
-      "he ",
-      "he is",
-      "she ",
-      "she is",
-      "we ",
-      "we are",
-      "they ",
-      "they are",
-      "hello",
-      "hi ",
-      "good morning",
-      "good evening",
-    ];
+    const enKeywords = ["i ", "i'm", "i am", "you ", "you are", "he ", "he is", "she ", "she is", "we ", "we are", "they ", "they are", "hello", "hi ", "good morning", "good evening"];
     const enLines = linhas.filter((l) => {
       const t = l.toLowerCase();
-      return (
-        hasLatin.test(l) &&
-        !ptAccents.test(l) &&
-        enKeywords.some((k) => t.startsWith(k))
-      );
+      return hasLatin.test(l) && !ptAccents.test(l) && enKeywords.some((k) => t.startsWith(k));
     });
     if (enLines.length > 0) return enLines.join("\n");
   }
@@ -327,38 +195,20 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
 
 function inferirNivelPercebido(texto) {
   const t = normalizarTexto(texto);
-  if (t.includes("nunca") || t.includes("zero") || t.includes("começar do zero")) {
-    return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
-  }
-  if (t.includes("basico") || t.includes("básico") || t.includes("pouco")) {
-    return { nivelPercebido: "básico", nivelCEFR: "A1" };
-  }
-  if (t.includes("intermediario") || t.includes("intermediário") || t.includes("mediano")) {
-    return { nivelPercebido: "intermediário", nivelCEFR: "A2/B1" };
-  }
-  if (t.includes("avancado") || t.includes("avançado") || t.includes("fluente")) {
-    return { nivelPercebido: "avançado", nivelCEFR: "B2+" };
-  }
+  if (t.includes("nunca") || t.includes("zero") || t.includes("começar do zero")) return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
+  if (t.includes("basico") || t.includes("básico") || t.includes("pouco")) return { nivelPercebido: "básico", nivelCEFR: "A1" };
+  if (t.includes("intermediario") || t.includes("intermediário") || t.includes("mediano")) return { nivelPercebido: "intermediário", nivelCEFR: "A2/B1" };
+  if (t.includes("avancado") || t.includes("avançado") || t.includes("fluente")) return { nivelPercebido: "avançado", nivelCEFR: "B2+" };
   return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
 }
 
 function inferirMaiorDificuldade(texto) {
   const t = normalizarTexto(texto);
-  if (t.includes("pronuncia") || t.includes("pronúncia") || t.includes("falar") || t.includes("fala")) {
-    return "pronúncia / fala";
-  }
-  if (t.includes("gramatica") || t.includes("gramática")) {
-    return "gramática";
-  }
-  if (t.includes("vocabulario") || t.includes("vocabulário") || t.includes("palavra")) {
-    return "vocabulário";
-  }
-  if (t.includes("escuta") || t.includes("ouvir") || t.includes("listening")) {
-    return "escuta / compreensão auditiva";
-  }
-  if (t.includes("vergonha") || t.includes("timido") || t.includes("tímido") || t.includes("medo")) {
-    return "medo / vergonha de falar";
-  }
+  if (t.includes("pronuncia") || t.includes("pronúncia") || t.includes("falar") || t.includes("fala")) return "pronúncia / fala";
+  if (t.includes("gramatica") || t.includes("gramática")) return "gramática";
+  if (t.includes("vocabulario") || t.includes("vocabulário") || t.includes("palavra")) return "vocabulário";
+  if (t.includes("escuta") || t.includes("ouvir") || t.includes("listening")) return "escuta / compreensão auditiva";
+  if (t.includes("vergonha") || t.includes("timido") || t.includes("tímido") || t.includes("medo")) return "medo / vergonha de falar";
   return texto;
 }
 
@@ -370,17 +220,13 @@ function inferirPreferenciaFormato(texto) {
   return "misto";
 }
 
+// ✅ Agora reconhece "5x por semana"
 function inferirFrequenciaPreferida(texto) {
   const t = normalizarTexto(texto);
-  if (t.includes("todo dia") || t.includes("todos os dias") || t.includes("diario") || t.includes("diário")) {
-    return "diario";
-  }
-  if (t.includes("3x") || t.includes("3 vezes") || t.includes("tres vezes")) {
-    return "3x";
-  }
-  if (t.includes("so quando") || t.includes("só quando") || t.includes("quando eu falar") || t.includes("quando falar comigo")) {
-    return "livre";
-  }
+  if (t.includes("todo dia") || t.includes("todos os dias") || t.includes("diario") || t.includes("diário")) return "diario";
+  if (t.includes("5x") || t.includes("5 vezes") || t.includes("cinco vezes") || t.includes("5 vezes por semana")) return "5x";
+  if (t.includes("3x") || t.includes("3 vezes") || t.includes("tres vezes")) return "3x";
+  if (t.includes("so quando") || t.includes("só quando") || t.includes("quando eu falar") || t.includes("quando falar comigo")) return "livre";
   return "3x";
 }
 
@@ -390,42 +236,20 @@ function detectarTipoMensagem(textoNorm = "") {
   if (!textoNorm) return "geral";
 
   const isPedidoTraducao =
-    textoNorm.includes("como se diz") ||
-    textoNorm.includes("como diz") ||
-    textoNorm.includes("como eu digo") ||
-    textoNorm.includes("como digo") ||
-    textoNorm.includes("traduz") ||
-    textoNorm.includes("traduza") ||
-    textoNorm.includes("tradução") ||
-    textoNorm.includes("translate") ||
-    textoNorm.includes("em ingles") ||
-    textoNorm.includes("em inglês") ||
-    textoNorm.includes("em frances") ||
-    textoNorm.includes("em francês") ||
-    textoNorm.includes("what does") ||
-    textoNorm.includes("how do i say");
+    textoNorm.includes("como se diz") || textoNorm.includes("como diz") || textoNorm.includes("como eu digo") || textoNorm.includes("como digo") ||
+    textoNorm.includes("traduz") || textoNorm.includes("traduza") || textoNorm.includes("tradução") || textoNorm.includes("translate") ||
+    textoNorm.includes("em ingles") || textoNorm.includes("em inglês") || textoNorm.includes("em frances") || textoNorm.includes("em francês") ||
+    textoNorm.includes("what does") || textoNorm.includes("how do i say");
 
   if (isPedidoTraducao) return "pedido_traducao";
 
   const isPerguntaSobreKito =
-    textoNorm.includes("qual e o seu nome") ||
-    textoNorm.includes("qual o seu nome") ||
-    textoNorm.includes("teu nome") ||
-    textoNorm.includes("seu nome") ||
-    textoNorm.includes("como te chamas") ||
-    textoNorm.includes("como se chama") ||
-    textoNorm.includes("quem e voce") ||
-    textoNorm.includes("quem é voce") ||
-    textoNorm.includes("quem é você") ||
-    textoNorm.includes("what is your name") ||
-    textoNorm.includes("what's your name") ||
-    textoNorm.includes("who are you") ||
-    textoNorm.includes("voce e humano") ||
-    textoNorm.includes("você é humano") ||
-    textoNorm.includes("voce é um robo") ||
-    textoNorm.includes("você é um robô") ||
-    textoNorm.includes("vc e um robo") ||
-    textoNorm.includes("vc é um robo");
+    textoNorm.includes("qual e o seu nome") || textoNorm.includes("qual o seu nome") || textoNorm.includes("teu nome") || textoNorm.includes("seu nome") ||
+    textoNorm.includes("como te chamas") || textoNorm.includes("como se chama") ||
+    textoNorm.includes("quem e voce") || textoNorm.includes("quem é voce") || textoNorm.includes("quem é você") ||
+    textoNorm.includes("what is your name") || textoNorm.includes("what's your name") || textoNorm.includes("who are you") ||
+    textoNorm.includes("voce e humano") || textoNorm.includes("você é humano") ||
+    textoNorm.includes("voce é um robo") || textoNorm.includes("você é um robô") || textoNorm.includes("vc e um robo") || textoNorm.includes("vc é um robo");
 
   if (isPerguntaSobreKito) return "pergunta_sobre_kito";
 
@@ -441,11 +265,6 @@ async function saveStudentToFirestore(phone, aluno) {
       return;
     }
 
-    let createdAt = aluno.createdAt;
-    let lastMessageAt = aluno.lastMessageAt;
-    let reminder1hSentAt = aluno.reminder1hSentAt;
-    let reminder2dSentAt = aluno.reminder2dSentAt;
-
     const normalize = (val) => {
       if (!val) return null;
       if (typeof val.toDate === "function") return val.toDate();
@@ -453,10 +272,15 @@ async function saveStudentToFirestore(phone, aluno) {
       return isNaN(d.getTime()) ? null : d;
     };
 
-    createdAt = normalize(createdAt) || new Date();
-    lastMessageAt = normalize(lastMessageAt) || new Date();
-    reminder1hSentAt = normalize(reminder1hSentAt);
-    reminder2dSentAt = normalize(reminder2dSentAt);
+    const createdAt = normalize(aluno.createdAt) || new Date();
+    const lastMessageAt = normalize(aluno.lastMessageAt) || new Date();
+    const reminder1hSentAt = normalize(aluno.reminder1hSentAt);
+    const reminder2dSentAt = normalize(aluno.reminder2dSentAt);
+
+    // ✅ NOVOS CAMPOS PARA LEMBRETES POR FREQUÊNCIA
+    const lastNudgeAt = normalize(aluno.lastNudgeAt);
+    const preferredStudyDays = Array.isArray(aluno.preferredStudyDays) ? aluno.preferredStudyDays : null;
+    const preferredStudyHour = Number.isFinite(aluno.preferredStudyHour) ? aluno.preferredStudyHour : null;
 
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     await docRef.set(
@@ -470,14 +294,26 @@ async function saveStudentToFirestore(phone, aluno) {
         frequenciaPreferida: aluno.frequenciaPreferida ?? null,
         objetivo: aluno.objetivo ?? null,
         stage: aluno.stage ?? null,
-        chatMode: aluno.chatMode ?? null, // ✅ NOVO
+        chatMode: aluno.chatMode ?? null,
+
         messagesCount: aluno.messagesCount ?? 0,
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
+
         createdAt,
         lastMessageAt,
         reminder1hSentAt: reminder1hSentAt || null,
         reminder2dSentAt: reminder2dSentAt || null,
+
+        // ✅ NOVO: lembretes por frequência
+        lastNudgeAt: lastNudgeAt || null,
+        nudgeCount: aluno.nudgeCount ?? 0,
+        preferredStudyDays: preferredStudyDays || null, // [1..7] (Mon..Sun)
+        preferredStudyHour: preferredStudyHour, // 0..23
+
+        // ✅ NOVO: micro-vitórias simples
+        celebrations: aluno.celebrations ?? null,
+
         updatedAt: new Date(),
       },
       { merge: true }
@@ -508,6 +344,9 @@ async function loadStudentFromFirestore(phone) {
       lastMessageAt: normalize(data.lastMessageAt) || new Date(),
       reminder1hSentAt: normalize(data.reminder1hSentAt),
       reminder2dSentAt: normalize(data.reminder2dSentAt),
+
+      // ✅ NOVO
+      lastNudgeAt: normalize(data.lastNudgeAt),
     };
   } catch (err) {
     console.error("❌ Erro ao carregar aluno do Firestore:", err.message);
@@ -517,9 +356,7 @@ async function loadStudentFromFirestore(phone) {
 
 /** ---------- OpenAI (Kito, professor da Jovika) ---------- **/
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
   const history = aluno.history || [];
@@ -530,11 +367,7 @@ async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
   console.log("🧠 Tipo de mensagem detectado:", tipoMensagem);
 
   const idiomaAlvo =
-    aluno.idioma === "frances"
-      ? "FRANCÊS"
-      : aluno.idioma === "ingles"
-      ? "INGLÊS"
-      : "INGLÊS E FRANCÊS";
+    aluno.idioma === "frances" ? "FRANCÊS" : aluno.idioma === "ingles" ? "INGLÊS" : "INGLÊS E FRANCÊS";
 
   const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
 
@@ -549,98 +382,70 @@ async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
 
   const systemPrompt = `
 Tu és o **Kito**, professor oficial da **Jovika Academy**, uma escola moderna de inglês e francês
-para jovens de Angola, Brasil e Portugal. Tu dás aulas pelo WhatsApp, de forma muito humana,
-natural e inteligente (tipo ChatGPT, mas focado em idiomas).
+para jovens de Angola, Brasil e Portugal. Você dá aulas pelo WhatsApp, de forma humana, natural e inteligente.
 
 MODO ATUAL DO ALUNO (MUITO IMPORTANTE):
 - chatMode: "${modo}"
 - Se chatMode = "conversa":
   - O aluno quer praticar falando como se fosse com um humano.
   - Você DEVE responder primeiro como uma pessoa (fluido e natural).
-  - NÃO faça correção de pronúncia/gramática automaticamente.
-  - No máximo, ofereça no final uma pergunta opcional: "Quer que eu corrija essa frase?"
+  - NÃO faça correção automática.
+  - No final, pode perguntar opcionalmente: "Quer que eu corrija essa frase?"
 - Se chatMode = "aprender":
   - O aluno quer aprender com correções e explicações.
-  - Você responde e corrige com carinho (sem interromper demais), com exemplos curtos.
+  - Corrija com carinho, com exemplos curtos.
 
-IDENTIDADE DO KITO:
+IDENTIDADE:
 - Nome: Kito
 - Papel: professor de INGLÊS e FRANCÊS da Jovika Academy
-- Estilo: jovem, descontraído, empático, mas muito competente.
 
-PORTUGUÊS DO BRASIL (IMPORTANTE):
-- Escreve sempre em **português do Brasil**, com gramática correta.
-- Usa "você" (não uses "tu") e evita gírias como "pra", "beleza?" ou "bora".
-- Prefere "para", "porque", "tudo bem?", "vamos continuar?", etc.
-- Quando escrever frases em francês:
-  - primeira linha: só a frase em francês;
-  - linha seguinte: tradução em português do Brasil.
-- Quando escrever frases em inglês:
-  - primeira linha: só a frase em inglês;
-  - linha seguinte: tradução em português do Brasil.
+PORTUGUÊS DO BRASIL:
+- Escreva sempre em português do Brasil, usando "você".
+- Evite gírias ("pra", "bora").
+- Inglês: 1ª linha frase em inglês; 2ª linha tradução.
+- Francês: 1ª linha frase em francês; 2ª linha tradução.
 
-PERFIL PEDAGÓGICO DESTE ALUNO:
+PERFIL DO ALUNO:
 - Nome: ${aluno.nome || "não informado"}
 - Idioma alvo: ${idiomaAlvo}
-- Nível aproximado (interno): ${aluno.nivel || "A0"}
+- Nível interno: ${aluno.nivel || "A0"}
 - Nível percebido: ${aluno.nivelPercebido || "não definido"}
-- Maior dificuldade: ${
-    aluno.maiorDificuldade || "ainda não ficou clara — faça perguntas simples para descobrir."
-  }
-- Preferência de formato: ${aluno.preferenciaFormato || "misto"}.
-- Frequência preferida: ${aluno.frequenciaPreferida || "não definida"}.
-- Objetivo: ${
-    aluno.objetivo ||
-    "ainda não ficou claro — faça perguntas simples e naturais para entender o que ele realmente precisa."
-  }
+- Maior dificuldade: ${aluno.maiorDificuldade || "descobrir com perguntas simples."}
+- Preferência de formato: ${aluno.preferenciaFormato || "misto"}
+- Frequência preferida: ${aluno.frequenciaPreferida || "não definida"}
+- Objetivo: ${aluno.objetivo || "descobrir com perguntas simples."}
 
-MÓDULO ATUAL (APENAS COMO GUIA, NÃO SCRIPT DURO):
+MÓDULO (GUIA):
 - Título: ${modulo?.title || "Introdução"}
-- Nível do módulo: ${modulo?.level || aluno.nivel || "iniciante"}
-- Objetivo do módulo: ${modulo?.goal || "ajudar o aluno a comunicar em situações básicas."}
-- Passo atual: ${step}
-- Total de passos: ${totalSteps}
+- Objetivo: ${modulo?.goal || "comunicação básica"}
+- Passo atual: ${step} de ${totalSteps}
 
 TIPO DA ÚLTIMA MENSAGEM:
-- tipoMensagem: ${tipoMensagem}
+- ${tipoMensagem}
 
-REGRAS POR TIPO:
-- Se tipoMensagem = "pedido_traducao": responda direto, explique e dê a frase correta.
-- Se tipoMensagem = "pergunta_sobre_kito": responda como conversa real em português do Brasil.
-- Se tipoMensagem = "geral":
-  - Responda primeiro ao que o aluno disse.
-  - Se chatMode = "conversa", foque em manter o diálogo fluindo.
-  - Se chatMode = "aprender", você pode corrigir e ensinar, mas sem textão.
+REGRAS:
+- pedido_traducao: responda direto e explique curto.
+- pergunta_sobre_kito: responda como conversa real.
+- geral: responda primeiro ao aluno; depois 1 pergunta.
 
 ESTILO:
-- Mensagens curtas, estilo WhatsApp.
-- No máximo 2 blocos curtos + 1 pergunta.
-- Emojis com moderação (1 no máximo, se fizer sentido).
+- Mensagens curtas estilo WhatsApp.
+- Máximo 2 blocos + 1 pergunta.
+- Emojis com moderação (1 no máximo).
 
 SOBRE ÁUDIO:
-- Não diga "vou mandar áudio" nem "[Áudio enviado]".
-- O sistema decide o envio do áudio.
+- Nunca diga "vou mandar áudio" nem "[Áudio enviado]". O sistema decide.
   `.trim();
 
-  const mensagens = [
-    { role: "system", content: systemPrompt },
-    ...history.slice(-10),
-  ];
+  const mensagens = [{ role: "system", content: systemPrompt }, ...history.slice(-10)];
 
   const resposta = await openai.responses.create({
     model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
     input: mensagens,
   });
 
-  const textoGerado =
-    resposta.output?.[0]?.content?.[0]?.text ||
-    "Desculpa, deu um erro aqui. Tente de novo 🙏";
-  const textoLimpo = limparTextoResposta(textoGerado);
-
-  console.log("🧠 Resposta do Kito (bruta):", textoGerado);
-  console.log("🧠 Resposta do Kito (limpa):", textoLimpo);
-
-  return textoLimpo;
+  const textoGerado = resposta.output?.[0]?.content?.[0]?.text || "Desculpa, deu um erro aqui. Tente de novo 🙏";
+  return limparTextoResposta(textoGerado);
 }
 
 /** ---------- ÁUDIO: download + transcrição ---------- **/
@@ -661,22 +466,16 @@ async function transcreverAudio(audioUrl) {
     console.log("🎧 Transcrevendo áudio:", audioUrl);
     const tempPath = await downloadToTempFile(audioUrl);
 
-    // ✅ Importante: NÃO forçar language="pt"
-    // porque muitos alunos vão falar inglês/francês no áudio.
     const transcription = await openai.audio.transcriptions.create({
       model: "gpt-4o-mini-transcribe",
       file: fs.createReadStream(tempPath),
     });
 
     fs.promises.unlink(tempPath).catch(() => {});
-
     console.log("📝 Transcrição:", transcription.text);
     return transcription.text;
   } catch (err) {
-    console.error(
-      "❌ Erro ao transcrever áudio:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao transcrever áudio:", err.response?.data || err.message);
     return null;
   }
 }
@@ -712,13 +511,9 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
 
     const buffer = Buffer.from(await speech.arrayBuffer());
     const base64 = buffer.toString("base64");
-    const dataUrl = `data:audio/mpeg;base64,${base64}`;
-    return dataUrl;
+    return `data:audio/mpeg;base64,${base64}`;
   } catch (err) {
-    console.error(
-      "❌ Erro ao gerar áudio de resposta:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao gerar áudio de resposta:", err.response?.data || err.message);
     return null;
   }
 }
@@ -732,16 +527,11 @@ async function enviarMensagemWhatsApp(phone, message) {
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
     if (!instanceId || !instanceToken) {
-      console.error(
-        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env"
-      );
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env");
       return;
     }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-text`;
-
-    console.log("🌍 URL Z-API usada:", url);
-
     const payload = { phone, message };
 
     const headers = { "Content-Type": "application/json" };
@@ -750,10 +540,7 @@ async function enviarMensagemWhatsApp(phone, message) {
     const resp = await axios.post(url, payload, { headers });
     console.log("📤 Mensagem enviada via Z-API para", phone, "resp:", resp.data);
   } catch (err) {
-    console.error(
-      "❌ Erro ao enviar mensagem via Z-API:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao enviar mensagem via Z-API:", err.response?.data || err.message);
   }
 }
 
@@ -766,20 +553,13 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
     if (!instanceId || !instanceToken) {
-      console.error(
-        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)"
-      );
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)");
       return;
     }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
 
-    const payload = {
-      phone,
-      audio: audioBase64,
-      viewOnce: false,
-      waveform: true,
-    };
+    const payload = { phone, audio: audioBase64, viewOnce: false, waveform: true };
 
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
@@ -787,21 +567,135 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const resp = await axios.post(url, payload, { headers });
     console.log("📤 Áudio enviado via Z-API para", phone, "resp:", resp.data);
   } catch (err) {
-    console.error(
-      "❌ Erro ao enviar áudio via Z-API:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
   }
 }
 
+/** ---------- MICRO-VITÓRIAS (elogio leve para lembretes) ---------- **/
+
+function gerarMicroVitoria(aluno) {
+  const counts = aluno.messagesCount || 0;
+  if (counts >= 30) return "Você já está criando consistência de verdade 👏";
+  if (counts >= 15) return "Você já evoluiu mais do que imagina 👊";
+  if (counts >= 7) return "Você já está pegando o ritmo, parabéns!";
+  if (counts >= 3) return "Boa! Você já começou do jeito certo.";
+  return "Começar já foi uma vitória.";
+}
+
+/** ---------- LEMBRETES POR FREQUÊNCIA (NOVA LÓGICA) ---------- **/
+
+const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+// Evita spam: mínimo entre “puxadas”
+const MIN_NUDGE_GAP_MS = 20 * 60 * 60 * 1000; // 20h
+
+// fallback caso aluno não tenha hora definida
+const DEFAULT_NUDGE_HOUR = Number(process.env.DEFAULT_NUDGE_HOUR || 19); // 19h
+
+// Dias: 1..7 (Seg..Dom)
+function weekdayPtToIso1_7(jsGetDay0_6) {
+  // JS: 0=Dom..6=Sáb  => ISO: 1=Seg..7=Dom
+  if (jsGetDay0_6 === 0) return 7;
+  return jsGetDay0_6;
+}
+
+function getIdiomaTexto(idioma) {
+  if (idioma === "ingles") return "inglês";
+  if (idioma === "frances") return "francês";
+  if (idioma === "ambos") return "inglês e francês";
+  return "o idioma";
+}
+
+// Define dias de estudo automáticos conforme frequência
+function getDefaultStudyDays(frequenciaPreferida) {
+  // 1..7 (Seg..Dom)
+  if (frequenciaPreferida === "diario") return [1, 2, 3, 4, 5, 6, 7];
+  if (frequenciaPreferida === "5x") return [1, 2, 3, 4, 5]; // seg-sex
+  if (frequenciaPreferida === "3x") return [1, 3, 5]; // seg/qua/sex (simples e eficaz)
+  return null;
+}
+
+function isStudyDayToday(aluno, now = new Date()) {
+  const freq = aluno.frequenciaPreferida || "3x";
+  if (freq === "livre") return false;
+
+  const days = Array.isArray(aluno.preferredStudyDays) && aluno.preferredStudyDays.length
+    ? aluno.preferredStudyDays
+    : getDefaultStudyDays(freq);
+
+  if (!days) return false;
+
+  const todayIso = weekdayPtToIso1_7(now.getDay());
+  return days.includes(todayIso);
+}
+
+function shouldSendNudge(aluno, now = new Date()) {
+  if (!aluno.lastMessageAt) return false;
+  if (aluno.frequenciaPreferida === "livre") return false;
+
+  // só depois do onboarding completo (evita puxar aluno que nem terminou perguntas)
+  if (aluno.stage && aluno.stage !== "learning") return false;
+
+  // não mandar se já falou recentemente (últimas 12h)
+  const diffSinceMsg = now - new Date(aluno.lastMessageAt);
+  if (diffSinceMsg < 12 * 60 * 60 * 1000) return false;
+
+  // respeita janela mínima entre nudges
+  if (aluno.lastNudgeAt) {
+    const diffSinceNudge = now - new Date(aluno.lastNudgeAt);
+    if (diffSinceNudge < MIN_NUDGE_GAP_MS) return false;
+  }
+
+  // só nos dias certos
+  if (!isStudyDayToday(aluno, now)) return false;
+
+  // hora-alvo: tenta mandar perto do horário preferido
+  const targetHour = Number.isFinite(aluno.preferredStudyHour) ? aluno.preferredStudyHour : DEFAULT_NUDGE_HOUR;
+  const hour = now.getHours();
+
+  // manda num “window” de 4h ao redor do target (ex: 17..21 se target 19)
+  const start = (targetHour - 2 + 24) % 24;
+  const end = (targetHour + 2) % 24;
+
+  const inWindow = start <= end ? (hour >= start && hour <= end) : (hour >= start || hour <= end);
+  return inWindow;
+}
+
+function montarMensagemNudge(aluno) {
+  const nome = aluno.nome || "por aqui";
+  const idiomaTexto = getIdiomaTexto(aluno.idioma);
+  const micro = gerarMicroVitoria(aluno);
+
+  // curta e humana
+  return `Oi, ${nome}! 😊\n${micro}\n\nQuer praticar ${idiomaTexto} comigo agora? É rapidinho (3 min).`;
+}
+
+async function verificarELancarLembretes() {
+  const agora = new Date();
+
+  for (const [numero, aluno] of Object.entries(students)) {
+    try {
+      if (!shouldSendNudge(aluno, agora)) continue;
+
+      const msg = montarMensagemNudge(aluno);
+      console.log("⏰ Nudge por frequência para", numero, "freq:", aluno.frequenciaPreferida);
+
+      aluno.lastNudgeAt = agora;
+      aluno.nudgeCount = (aluno.nudgeCount || 0) + 1;
+
+      await enviarMensagemWhatsApp(numero, msg);
+      await saveStudentToFirestore(numero, aluno);
+    } catch (e) {
+      console.error("❌ Erro ao enviar nudge:", e.message);
+    }
+  }
+}
+
+setInterval(verificarELancarLembretes, REMINDER_CHECK_INTERVAL_MS);
+
 /** ---------- LÓGICA PRINCIPAL DE MENSAGEM ---------- **/
 
-async function processarMensagemAluno({
-  numeroAluno,
-  texto,
-  profileName,
-  isAudio,
-}) {
+async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
   let aluno = students[numeroAluno];
   const agora = new Date();
 
@@ -817,7 +711,13 @@ async function processarMensagemAluno({
         preferenciaFormato: fromDb.preferenciaFormato || null,
         frequenciaPreferida: fromDb.frequenciaPreferida || null,
         objetivo: fromDb.objetivo || null,
-        chatMode: fromDb.chatMode || null, // ✅ NOVO
+        chatMode: fromDb.chatMode || null,
+
+        // ✅ NOVO
+        preferredStudyDays: fromDb.preferredStudyDays || null,
+        preferredStudyHour: Number.isFinite(fromDb.preferredStudyHour) ? fromDb.preferredStudyHour : null,
+        lastNudgeAt: fromDb.lastNudgeAt || null,
+        nudgeCount: fromDb.nudgeCount || 0,
       };
       students[numeroAluno] = aluno;
     }
@@ -835,16 +735,28 @@ async function processarMensagemAluno({
       preferenciaFormato: null,
       frequenciaPreferida: null,
       objetivo: null,
-      chatMode: null, // ✅ NOVO
+      chatMode: null,
       messagesCount: 0,
       createdAt: agora,
       lastMessageAt: agora,
       moduleIndex: 0,
       moduleStep: 0,
+
+      // antigo (não usamos mais como “motor”, mas mantemos compatibilidade)
       reminder1hSentAt: null,
       reminder2dSentAt: null,
+
+      // ✅ novo
+      preferredStudyDays: null,
+      preferredStudyHour: null,
+      lastNudgeAt: null,
+      nudgeCount: 0,
+
+      celebrations: null,
+
       history: [],
     };
+
     students[numeroAluno] = aluno;
 
     const primeiroNome = extrairNome(profileName) || "Aluno";
@@ -858,17 +770,18 @@ async function processarMensagemAluno({
     return;
   }
 
-  // Atualiza stats e reseta lembretes
+  // Atualiza stats
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
-  aluno.reminder1hSentAt = null;
-  aluno.reminder2dSentAt = null;
+
+  // ✅ Importante: quando aluno fala, “zera” o nudge para evitar puxar em seguida
+  // (na prática, lastMessageAt já protege, mas isso deixa explícito)
   aluno.history = aluno.history || [];
 
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
 
-  // ✅ Permitir troca de modo a qualquer momento (somente quando já está em learning/ask_mode)
+  // ✅ Permitir troca de modo a qualquer momento
   const comandoModo = detectarComandoModo(texto || "");
   if (comandoModo && aluno.stage !== "ask_name" && aluno.stage !== "ask_language") {
     aluno.chatMode = comandoModo;
@@ -894,7 +807,6 @@ async function processarMensagemAluno({
       `Perfeito, ${nome}! 😄 Agora me conta: você quer começar por inglês, francês ou os dois?`
     );
   } else if (aluno.stage === "ask_language") {
-    // 2) Perguntar idioma
     const idioma = detectarIdioma(texto);
 
     if (!idioma) {
@@ -910,15 +822,11 @@ async function processarMensagemAluno({
       aluno.nivel = "A0";
 
       const idiomaTexto =
-        idioma === "ingles"
-          ? "inglês"
-          : idioma === "frances"
-          ? "francês"
-          : "inglês e francês";
+        idioma === "ingles" ? "inglês" : idioma === "frances" ? "francês" : "inglês e francês";
 
       await enviarMensagemWhatsApp(
         numeroAluno,
-        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\nAntes de começar a aula, quero te conhecer um pouco melhor para adaptar tudo ao seu perfil.\n\nVocê já estudou ${idiomaTexto} antes?`
+        `Ótimo, ${aluno.nome}! Vamos trabalhar ${idiomaTexto} juntos 💪✨\nAntes de começar, quero adaptar tudo ao seu perfil.\n\nVocê já estudou ${idiomaTexto} antes?`
       );
     }
   } else if (aluno.stage === "ask_experience") {
@@ -948,12 +856,15 @@ async function processarMensagemAluno({
 
     await enviarMensagemWhatsApp(
       numeroAluno,
-      "Show! Para eu organizar melhor os seus estudos:\nVocê prefere que eu te puxe todos os dias, 3x por semana ou só quando você falar comigo?"
+      "Show! Para eu organizar melhor os seus estudos:\nVocê prefere que eu te puxe todos os dias, 3x por semana, 5x por semana ou só quando você falar comigo?"
     );
   } else if (aluno.stage === "ask_frequency") {
     aluno.frequenciaPreferida = inferirFrequenciaPreferida(texto);
 
-    // ✅ NOVO PASSO: escolher modo (conversa/aprender)
+    // ✅ seta dias padrão baseado na frequência (sem pedir nada ainda)
+    aluno.preferredStudyDays = getDefaultStudyDays(aluno.frequenciaPreferida);
+    aluno.preferredStudyHour = DEFAULT_NUDGE_HOUR;
+
     aluno.stage = "ask_mode";
 
     await enviarMensagemWhatsApp(
@@ -962,39 +873,27 @@ async function processarMensagemAluno({
     );
   } else if (aluno.stage === "ask_mode") {
     const t = normalizarTexto(texto);
-    const escolheuConversa =
-      t.includes("1") || t.includes("convers") || t.includes("pratic");
-    const escolheuAprender =
-      t.includes("2") || t.includes("aprender") || t.includes("estudar") || t.includes("corrig");
+    const escolheuConversa = t.includes("1") || t.includes("convers") || t.includes("pratic");
+    const escolheuAprender = t.includes("2") || t.includes("aprender") || t.includes("estudar") || t.includes("corrig");
 
     if (!escolheuConversa && !escolheuAprender) {
-      await enviarMensagemWhatsApp(
-        numeroAluno,
-        "Só para eu acertar seu estilo 😊\nResponda com:\n1) conversar\n2) aprender"
-      );
+      await enviarMensagemWhatsApp(numeroAluno, "Só para eu acertar seu estilo 😊\nResponda com:\n1) conversar\n2) aprender");
     } else {
       aluno.chatMode = escolheuAprender ? "aprender" : "conversa";
       aluno.stage = "learning";
 
       const idiomaTexto =
-        aluno.idioma === "ingles"
-          ? "inglês"
-          : aluno.idioma === "frances"
-          ? "francês"
-          : "inglês e francês";
+        aluno.idioma === "ingles" ? "inglês" : aluno.idioma === "frances" ? "francês" : "inglês e francês";
 
       await enviarMensagemWhatsApp(
         numeroAluno,
         aluno.chatMode === "conversa"
-          ? `Perfeito 😊 A gente vai conversar para você praticar ${idiomaTexto}. Se quiser correção completa, diga: modo aprender.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
-          : `Combinado 💪 Eu vou te ensinar e corrigir enquanto a gente conversa em ${idiomaTexto}. Se quiser só praticar sem correção, diga: modo conversa.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}? Trabalho, viagem, faculdade, sair do país, ganhar confiança...?`
+          ? `Perfeito 😊 A gente vai conversar para você praticar ${idiomaTexto}.\nSe quiser correção completa, diga: modo aprender.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}?`
+          : `Combinado 💪 Eu vou te ensinar e corrigir enquanto a gente conversa em ${idiomaTexto}.\nSe quiser só praticar sem correção, diga: modo conversa.\n\nAgora me conte: qual é o seu principal objetivo com ${idiomaTexto}?`
       );
     }
   } else {
-    // 7) Fase de aprendizagem
-    if (aluno.stage !== "learning") {
-      aluno.stage = "learning";
-    }
+    if (aluno.stage !== "learning") aluno.stage = "learning";
 
     if (!aluno.objetivo) {
       aluno.objetivo = texto;
@@ -1014,40 +913,20 @@ async function processarMensagemAluno({
     const moduloAtual = trilha[moduleIndex] || trilha[0];
 
     const confirmacao = isConfirmMessage(texto);
-    if (confirmacao) console.log("✅ Confirmação de continuar módulo recebida.");
-
     const querAudioPorPedido = userQuerAudio(texto, isAudio);
 
     // ✅ ESPELHAR ÁUDIO (somente em modo conversa)
     const chatMode = aluno.chatMode || "conversa";
-    const espelharAudio =
-      isAudio && chatMode === "conversa";
+    const espelharAudio = isAudio && chatMode === "conversa";
 
     const pediuExercicioEmAudio =
       querAudioPorPedido &&
-      (textoNorm.includes("exercicio") ||
-        textoNorm.includes("exercício") ||
-        textoNorm.includes("exercicios") ||
-        textoNorm.includes("exercícios"));
+      (textoNorm.includes("exercicio") || textoNorm.includes("exercício") || textoNorm.includes("exercicios") || textoNorm.includes("exercícios"));
 
-    console.log("DEBUG_AUDIO_POLICY:", {
-      isAudio,
-      chatMode,
-      espelharAudio,
-      querAudioPorPedido,
-      pediuExercicioEmAudio,
-      tipoMensagem,
-    });
-
-    const idiomaAudioAlvo =
-      aluno.idioma === "ingles" || aluno.idioma === "frances"
-        ? aluno.idioma
-        : null;
+    const idiomaAudioAlvo = aluno.idioma === "ingles" || aluno.idioma === "frances" ? aluno.idioma : null;
 
     if (pediuExercicioEmAudio) {
-      const lastAssistant =
-        [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
-        null;
+      const lastAssistant = [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") || null;
 
       let textoParaAudio =
         lastAssistant?.content ||
@@ -1055,17 +934,10 @@ async function processarMensagemAluno({
 
       textoParaAudio = extrairTrechoParaAudio(textoParaAudio, idiomaAudioAlvo);
 
-      const audioBase64 = await gerarAudioRespostaKito(
-        textoParaAudio,
-        idiomaAudioAlvo
-      );
-      if (audioBase64) {
-        await enviarAudioWhatsApp(numeroAluno, audioBase64);
-      }
+      const audioBase64 = await gerarAudioRespostaKito(textoParaAudio, idiomaAudioAlvo);
+      if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
 
-      const msgConfirm =
-        "Pronto! Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
-
+      const msgConfirm = "Pronto! Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
       aluno.history.push({ role: "assistant", content: msgConfirm });
       await sleep(800);
       await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
@@ -1087,17 +959,11 @@ async function processarMensagemAluno({
 
       aluno.history.push({ role: "assistant", content: respostaKito });
 
-      // ✅ Política de áudio:
-      // - Se espelharAudio (áudio recebido + modo conversa) => manda áudio SEM o aluno pedir
-      // - Se querAudioPorPedido => manda áudio sob pedido (como já era)
       const deveMandarAudio = espelharAudio || querAudioPorPedido;
-
       if (deveMandarAudio) {
         const trecho = extrairTrechoParaAudio(respostaKito, idiomaAudioAlvo);
         const audioBase64 = await gerarAudioRespostaKito(trecho, idiomaAudioAlvo);
-        if (audioBase64) {
-          await enviarAudioWhatsApp(numeroAluno, audioBase64);
-        }
+        if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
       }
 
       await sleep(1200);
@@ -1108,53 +974,6 @@ async function processarMensagemAluno({
   students[numeroAluno] = aluno;
   await saveStudentToFirestore(numeroAluno, aluno);
 }
-
-/** ---------- LEMBRETES AUTOMÁTICOS (1h e 2 dias) ---------- **/
-
-const ONE_HOUR_MS = 60 * 60 * 1000;
-const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
-const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-
-function getIdiomaTexto(idioma) {
-  if (idioma === "ingles") return "inglês";
-  if (idioma === "frances") return "francês";
-  if (idioma === "ambos") return "inglês e francês";
-  return "o idioma";
-}
-
-async function verificarELancarLembretes() {
-  const agora = new Date();
-
-  for (const [numero, aluno] of Object.entries(students)) {
-    if (!aluno.lastMessageAt) continue;
-    if (aluno.frequenciaPreferida === "livre") continue;
-
-    const diff = agora - new Date(aluno.lastMessageAt);
-    const idiomaTexto = getIdiomaTexto(aluno.idioma);
-    const nome = aluno.nome || "por aqui";
-
-    const afterLast = (d) => !d || new Date(d) < new Date(aluno.lastMessageAt);
-
-    if (diff >= TWO_DAYS_MS && afterLast(aluno.reminder2dSentAt)) {
-      const msg2d = `Oi, ${nome}! 😊 Faz alguns dias que a gente não pratica ${idiomaTexto} juntos.\nQuer retomar agora?`;
-      console.log("⏰ Lembrete 2 dias para", numero);
-      aluno.reminder2dSentAt = agora;
-      await enviarMensagemWhatsApp(numero, msg2d);
-      await saveStudentToFirestore(numero, aluno);
-      continue;
-    }
-
-    if (diff >= ONE_HOUR_MS && diff < TWO_DAYS_MS && afterLast(aluno.reminder1hSentAt)) {
-      const msg1h = `Oi, ${nome}! 😄 Você quer continuar sua prática de ${idiomaTexto} agora? Se quiser, é só me mandar uma mensagem e seguimos do ponto onde paramos.`;
-      console.log("⏰ Lembrete 1h para", numero);
-      aluno.reminder1hSentAt = agora;
-      await enviarMensagemWhatsApp(numero, msg1h);
-      await saveStudentToFirestore(numero, aluno);
-    }
-  }
-}
-
-setInterval(verificarELancarLembretes, REMINDER_CHECK_INTERVAL_MS);
 
 /** ---------- WEBHOOK Z-API ---------- **/
 
@@ -1169,7 +988,7 @@ app.post("/zapi-webhook", async (req, res) => {
 
     const msgId = data.messageId;
     const numeroAluno = data.phone;
-    const momentVal = data.momment;
+    const momentVal = data.momment; // (Z-API às vezes manda "momment")
     const texto = data.text?.message || null;
 
     let audioUrl =
@@ -1179,12 +998,6 @@ app.post("/zapi-webhook", async (req, res) => {
       data.voice?.url ||
       data.audio?.audioUrl ||
       null;
-
-    console.log("DEBUG_AUDIO_URL:", {
-      hasText: !!texto,
-      audioUrl,
-      audio: data.audio,
-    });
 
     if (processedMessages.has(msgId)) {
       console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
@@ -1196,9 +1009,7 @@ app.post("/zapi-webhook", async (req, res) => {
       console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
       return res.status(200).send("duplicate_moment_ignored");
     }
-    if (momentVal) {
-      lastMomentByPhone[numeroAluno] = momentVal;
-    }
+    if (momentVal) lastMomentByPhone[numeroAluno] = momentVal;
 
     const agora = Date.now();
     const ultimo = lastTextByPhone[numeroAluno];
@@ -1206,9 +1017,7 @@ app.post("/zapi-webhook", async (req, res) => {
       console.log("⚠️ Mensagem duplicada ignorada (texto + tempo):", msgId, texto);
       return res.status(200).send("duplicate_text_recent");
     }
-    if (texto) {
-      lastTextByPhone[numeroAluno] = { text: texto, time: agora };
-    }
+    if (texto) lastTextByPhone[numeroAluno] = { text: texto, time: agora };
 
     const profileName = data.senderName || data.chatName || "Aluno";
 
@@ -1228,29 +1037,14 @@ app.post("/zapi-webhook", async (req, res) => {
         return res.status(200).send("audio_transcription_failed");
       }
 
-      await processarMensagemAluno({
-        numeroAluno,
-        texto: transcricao,
-        profileName,
-        isAudio: true,
-      });
-
+      await processarMensagemAluno({ numeroAluno, texto: transcricao, profileName, isAudio: true });
       return res.status(200).send("ok_audio");
     }
 
-    await processarMensagemAluno({
-      numeroAluno,
-      texto,
-      profileName,
-      isAudio: false,
-    });
-
+    await processarMensagemAluno({ numeroAluno, texto, profileName, isAudio: false });
     res.status(200).send("ok");
   } catch (erro) {
-    console.error(
-      "❌ Erro no processamento do webhook Z-API:",
-      erro?.response?.data || erro.message
-    );
+    console.error("❌ Erro no processamento do webhook Z-API:", erro?.response?.data || erro.message);
     return res.status(500).send("erro");
   }
 });
@@ -1270,9 +1064,13 @@ app.get("/admin/dashboard", (req, res) => {
     nivel: dados.nivel || "-",
     mensagens: dados.messagesCount || 0,
     stage: dados.stage,
-    chatMode: dados.chatMode || "-", // ✅ NOVO
+    chatMode: dados.chatMode || "-",
     moduleIndex: dados.moduleIndex ?? 0,
     moduleStep: dados.moduleStep ?? 0,
+    frequenciaPreferida: dados.frequenciaPreferida || "-",
+    preferredStudyHour: Number.isFinite(dados.preferredStudyHour) ? dados.preferredStudyHour : "-",
+    nudgeCount: dados.nudgeCount || 0,
+    lastNudgeAt: dados.lastNudgeAt || null,
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
   }));
@@ -1298,89 +1096,29 @@ app.get("/admin/dashboard", (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e5e7eb;
-      padding: 24px;
-    }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; color: #e5e7eb; padding: 24px; }
     h1 { font-size: 24px; margin-bottom: 8px; }
     h2 { font-size: 18px; margin: 24px 0 12px; }
     .subtitle { color: #9ca3af; margin-bottom: 20px; }
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-    .card {
-      background: #111827;
-      border-radius: 12px;
-      padding: 16px;
-      border: 1px solid #1f2937;
-    }
-    .card-title {
-      font-size: 13px;
-      color: #9ca3af;
-      margin-bottom: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #111827; border-radius: 12px; padding: 16px; border: 1px solid #1f2937; }
+    .card-title { font-size: 13px; color: #9ca3af; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
     .card-value { font-size: 22px; font-weight: 600; }
     .card-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
     table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
-    th, td {
-      padding: 8px 10px;
-      text-align: left;
-      border-bottom: 1px solid #1f2937;
-      vertical-align: top;
-    }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1f2937; vertical-align: top; }
     th { background: #111827; position: sticky; top: 0; z-index: 1; }
     tr:nth-child(even) td { background: #020617; }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 500;
-    }
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
     .badge-en { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
     .badge-fr { background: rgba(251, 191, 36, 0.15); color: #facc15; }
     .badge-both { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; }
-    .stage-pill {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #111827;
-      color: #e5e7eb;
-      display: inline-block;
-    }
-    .table-wrapper {
-      max-height: 60vh;
-      overflow: auto;
-      border-radius: 12px;
-      border: 1px solid #1f2937;
-      background: #020617;
-    }
-    .top-bar {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 12px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-    }
-    .pill {
-      font-size: 11px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid #1f2937;
-      color: #9ca3af;
-    }
+    .stage-pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #111827; color: #e5e7eb; display: inline-block; }
+    .table-wrapper { max-height: 60vh; overflow: auto; border-radius: 12px; border: 1px solid #1f2937; background: #020617; }
+    .top-bar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .pill { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid #1f2937; color: #9ca3af; }
     .footer { margin-top: 24px; font-size: 11px; color: #6b7280; }
-    a { color: #38bdf8; text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    code { background: rgba(255,255,255,0.06); padding: 2px 6px; border-radius: 6px; }
   </style>
 </head>
 <body>
@@ -1389,9 +1127,7 @@ app.get("/admin/dashboard", (req, res) => {
       <h1>Dashboard • Jovika Academy</h1>
       <div class="subtitle">Professor Kito — visão geral dos alunos em tempo real</div>
     </div>
-    <div class="pill">
-      Token: <strong>${process.env.ADMIN_TOKEN || "não definido"}</strong>
-    </div>
+    <div class="pill">Token: <strong>${process.env.ADMIN_TOKEN || "não definido"}</strong></div>
   </div>
 
   <div class="cards">
@@ -1403,19 +1139,17 @@ app.get("/admin/dashboard", (req, res) => {
     <div class="card">
       <div class="card-title">Ativos nas últimas 24h</div>
       <div class="card-value">${ativos24h}</div>
-      <div class="card-sub">Alunos que enviaram mensagem nas últimas 24 horas</div>
+      <div class="card-sub">Quem falou nas últimas 24 horas</div>
     </div>
     <div class="card">
       <div class="card-title">Idiomas</div>
-      <div class="card-value">
-        EN: ${ingles} · FR: ${frances} · Ambos: ${ambos}
-      </div>
-      <div class="card-sub">Distribuição por idioma escolhido</div>
+      <div class="card-value">EN: ${ingles} · FR: ${frances} · Ambos: ${ambos}</div>
+      <div class="card-sub">Distribuição por idioma</div>
     </div>
     <div class="card">
       <div class="card-title">Mensagens totais (soma)</div>
       <div class="card-value">${alunos.reduce((sum, a) => sum + (a.mensagens || 0), 0)}</div>
-      <div class="card-sub">Total de mensagens recebidas de todos os alunos</div>
+      <div class="card-sub">Mensagens recebidas</div>
     </div>
   </div>
 
@@ -1430,26 +1164,26 @@ app.get("/admin/dashboard", (req, res) => {
           <th>Nível</th>
           <th>Stage</th>
           <th>Modo</th>
+          <th>Freq</th>
+          <th>Hora</th>
+          <th>Nudges</th>
+          <th>Último nudge</th>
           <th>Módulo</th>
           <th>Msgs</th>
           <th>Entrou em</th>
-          <th>Última mensagem</th>
+          <th>Última msg</th>
         </tr>
       </thead>
       <tbody>
         ${
           alunos.length === 0
-            ? `<tr><td colspan="10">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
+            ? `<tr><td colspan="14">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
             : alunos
                 .map((a) => {
                   let idiomaBadge = `<span class="badge">${a.idioma}</span>`;
-                  if (a.idioma === "ingles") {
-                    idiomaBadge = `<span class="badge badge-en">Inglês</span>`;
-                  } else if (a.idioma === "frances") {
-                    idiomaBadge = `<span class="badge badge-fr">Francês</span>`;
-                  } else if (a.idioma === "ambos") {
-                    idiomaBadge = `<span class="badge badge-both">Inglês + Francês</span>`;
-                  }
+                  if (a.idioma === "ingles") idiomaBadge = `<span class="badge badge-en">Inglês</span>`;
+                  else if (a.idioma === "frances") idiomaBadge = `<span class="badge badge-fr">Francês</span>`;
+                  else if (a.idioma === "ambos") idiomaBadge = `<span class="badge badge-both">Inglês + Francês</span>`;
 
                   return `
                   <tr>
@@ -1459,6 +1193,10 @@ app.get("/admin/dashboard", (req, res) => {
                     <td>${a.nivel}</td>
                     <td><span class="stage-pill">${a.stage}</span></td>
                     <td>${a.chatMode}</td>
+                    <td>${a.frequenciaPreferida}</td>
+                    <td>${a.preferredStudyHour}</td>
+                    <td>${a.nudgeCount}</td>
+                    <td>${formatDate(a.lastNudgeAt)}</td>
                     <td>Mód ${a.moduleIndex + 1} · Passo ${a.moduleStep + 1}</td>
                     <td>${a.mensagens}</td>
                     <td>${formatDate(a.createdAt)}</td>
@@ -1473,7 +1211,7 @@ app.get("/admin/dashboard", (req, res) => {
   </div>
 
   <div class="footer">
-    Endpoint JSON também disponível em <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Jovika Academy · ${new Date().getFullYear()}
+    Endpoint JSON: <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Jovika Academy · ${new Date().getFullYear()}
   </div>
 </body>
 </html>
@@ -1496,6 +1234,11 @@ app.get("/admin/stats", (req, res) => {
     idioma: dados.idioma,
     nivel: dados.nivel,
     chatMode: dados.chatMode || null,
+    frequenciaPreferida: dados.frequenciaPreferida || null,
+    preferredStudyDays: dados.preferredStudyDays || null,
+    preferredStudyHour: Number.isFinite(dados.preferredStudyHour) ? dados.preferredStudyHour : null,
+    nudgeCount: dados.nudgeCount || 0,
+    lastNudgeAt: dados.lastNudgeAt || null,
     mensagens: dados.messagesCount || 0,
     stage: dados.stage,
     moduleIndex: dados.moduleIndex ?? 0,
@@ -1509,23 +1252,17 @@ app.get("/admin/stats", (req, res) => {
   const frances = alunos.filter((a) => a.idioma === "frances").length;
   const ambos = alunos.filter((a) => a.idioma === "ambos").length;
 
-  res.json({
-    totalAlunos: total,
-    porIdioma: { ingles, frances, ambos },
-    alunos,
-  });
+  res.json({ totalAlunos: total, porIdioma: { ingles, frances, ambos }, alunos });
 });
 
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL PEDAGÓGICO + LEMBRETES + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL + LEMBRETES POR FREQUÊNCIA + MODO CONVERSA/APRENDER + ESPELHAR ÁUDIO) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`
-  );
+  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`);
 });

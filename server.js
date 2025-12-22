@@ -13,8 +13,6 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
-
-// ✅ Stripe é opcional: só ativa as rotas se tiver STRIPE_SECRET_KEY no .env
 import Stripe from "stripe";
 
 console.log(
@@ -26,17 +24,28 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Para receber JSON da Z-API
-app.use(bodyParser.json());
+/**
+ * ✅ IMPORTANTE (Stripe Webhook):
+ * O Stripe precisa do RAW body para validar a assinatura.
+ * Se você usar JSON parser antes, o req.body vira objeto e a assinatura falha.
+ *
+ * Solução: middleware condicional:
+ * - /stripe/webhook => raw({ type: "application/json" })
+ * - resto => json()
+ */
+const stripeRawParser = bodyParser.raw({ type: "application/json" });
+const jsonParser = bodyParser.json();
+
+app.use((req, res, next) => {
+  if (req.originalUrl === "/stripe/webhook") return stripeRawParser(req, res, next);
+  return jsonParser(req, res, next);
+});
 
 // Stripe (opcional)
 const stripe =
   process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.trim()
     ? new Stripe(process.env.STRIPE_SECRET_KEY.trim(), { apiVersion: "2024-06-20" })
     : null;
-
-// ⚠️ Webhook do Stripe precisa de raw body. Vamos criar uma rota separada com raw parser.
-const stripeRawParser = bodyParser.raw({ type: "application/json" });
 
 // "Base de dados" simples em memória (cache)
 const students = {};
@@ -53,8 +62,8 @@ const FREE_DAILY_LIMIT = Number(process.env.FREE_DAILY_LIMIT || 30);
 const PAYWALL_COOLDOWN_HOURS = Number(process.env.PAYWALL_COOLDOWN_HOURS || 20);
 
 // ✅ Link Stripe base (payment link) – vamos anexar client_reference_id com o telefone
-const STRIPE_PAYMENT_LINK_URL =
-  (process.env.STRIPE_PAYMENT_LINK_URL || "https://buy.stripe.com/00w28qchVgVQdfm1eS9ws01").trim();
+const STRIPE_PAYMENT_LINK_URL = (process.env.STRIPE_PAYMENT_LINK_URL ||
+  "https://buy.stripe.com/00w28qchVgVQdfm1eS9ws01").trim();
 
 // ✅ Brasil (PIX manual)
 const BR_PIX_NAME = "Ademandra Francisco";
@@ -163,8 +172,7 @@ function formatDate(d) {
 
 // ✅ Data do dia (UTC) para reset simples do contador diário
 function todayKeyUTC(now = new Date()) {
-  // yyyy-mm-dd
-  return now.toISOString().slice(0, 10);
+  return now.toISOString().slice(0, 10); // yyyy-mm-dd
 }
 
 function safeToDate(val) {
@@ -268,7 +276,6 @@ function canSendPaywallPrompt(aluno, now = new Date()) {
 
 function userQuerAudio(texto = "", isAudio = false) {
   const t = normalizarTexto(texto || "");
-
   const gatilhos = [
     "manda audio",
     "manda áudio",
@@ -306,7 +313,6 @@ function userQuerAudio(texto = "", isAudio = false) {
   ];
 
   const pediuPorTexto = gatilhos.some((p) => t.includes(p));
-
   const pediuPorAudio =
     isAudio &&
     (t.includes("pronun") || t.includes("pronún") || t.includes("corrig") || gatilhos.some((p) => t.includes(p)));
@@ -474,7 +480,6 @@ function inferirPreferenciaFormato(texto) {
   return "misto";
 }
 
-// ✅ Agora reconhece "5x por semana"
 function inferirFrequenciaPreferida(texto) {
   const t = normalizarTexto(texto);
   if (t.includes("todo dia") || t.includes("todos os dias") || t.includes("diario") || t.includes("diário"))
@@ -532,8 +537,8 @@ function detectarTipoMensagem(textoNorm = "") {
 
   if (isPerguntaSobreKito) return "pergunta_sobre_kito";
 
-  // ✅ comando premium também entra aqui (atalho)
-  if (textoNorm.includes("premium") || textoNorm.includes("assinar") || textoNorm.includes("pagar")) return "pedido_premium";
+  if (textoNorm.includes("premium") || textoNorm.includes("assinar") || textoNorm.includes("pagar"))
+    return "pedido_premium";
 
   return "geral";
 }
@@ -554,12 +559,10 @@ async function saveStudentToFirestore(phone, aluno) {
     const reminder1hSentAt = normalize(aluno.reminder1hSentAt);
     const reminder2dSentAt = normalize(aluno.reminder2dSentAt);
 
-    // ✅ lembretes por frequência
     const lastNudgeAt = normalize(aluno.lastNudgeAt);
     const preferredStudyDays = Array.isArray(aluno.preferredStudyDays) ? aluno.preferredStudyDays : null;
     const preferredStudyHour = Number.isFinite(aluno.preferredStudyHour) ? aluno.preferredStudyHour : null;
 
-    // ✅ paywall / plano
     const premiumUntil = normalize(aluno.premiumUntil);
     const lastPaywallPromptAt = normalize(aluno.lastPaywallPromptAt);
 
@@ -581,7 +584,6 @@ async function saveStudentToFirestore(phone, aluno) {
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
 
-        // ✅ plano / paywall
         plan: aluno.plan ?? "free",
         premiumUntil: premiumUntil || null,
         paymentProvider: aluno.paymentProvider ?? null,
@@ -589,13 +591,11 @@ async function saveStudentToFirestore(phone, aluno) {
         dailyDate: aluno.dailyDate ?? null,
         lastPaywallPromptAt: lastPaywallPromptAt || null,
 
-        // antigo
         createdAt,
         lastMessageAt,
         reminder1hSentAt: reminder1hSentAt || null,
         reminder2dSentAt: reminder2dSentAt || null,
 
-        // ✅ lembretes
         lastNudgeAt: lastNudgeAt || null,
         nudgeCount: aluno.nudgeCount ?? 0,
         preferredStudyDays: preferredStudyDays || null,
@@ -628,7 +628,6 @@ async function loadStudentFromFirestore(phone) {
       reminder2dSentAt: safeToDate(data.reminder2dSentAt),
       lastNudgeAt: safeToDate(data.lastNudgeAt),
 
-      // ✅ plano
       premiumUntil: safeToDate(data.premiumUntil),
       lastPaywallPromptAt: safeToDate(data.lastPaywallPromptAt),
     };
@@ -769,8 +768,6 @@ async function transcreverAudio(audioUrl) {
 
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
-    // ✅ ÁUDIO NO FREE TAMBÉM (como você pediu)
-    // Se quiser desligar globalmente algum dia: ENABLE_TTS=false no .env
     const enableTts = String(process.env.ENABLE_TTS || "true").toLowerCase() !== "false";
     if (!enableTts) return null;
 
@@ -862,7 +859,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
   }
 }
 
-/** ---------- MICRO-VITÓRIAS (elogio leve para lembretes) ---------- **/
+/** ---------- MICRO-VITÓRIAS ---------- **/
 
 function gerarMicroVitoria(aluno) {
   const counts = aluno.messagesCount || 0;
@@ -873,19 +870,13 @@ function gerarMicroVitoria(aluno) {
   return "Começar já foi uma vitória.";
 }
 
-/** ---------- LEMBRETES POR FREQUÊNCIA (NOVA LÓGICA) ---------- **/
+/** ---------- LEMBRETES POR FREQUÊNCIA ---------- **/
 
 const REMINDER_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-
-// Evita spam: mínimo entre “puxadas”
 const MIN_NUDGE_GAP_MS = 20 * 60 * 60 * 1000; // 20h
+const DEFAULT_NUDGE_HOUR = Number(process.env.DEFAULT_NUDGE_HOUR || 19);
 
-// fallback caso aluno não tenha hora definida
-const DEFAULT_NUDGE_HOUR = Number(process.env.DEFAULT_NUDGE_HOUR || 19); // 19h
-
-// Dias: 1..7 (Seg..Dom)
 function weekdayPtToIso1_7(jsGetDay0_6) {
-  // JS: 0=Dom..6=Sáb  => ISO: 1=Seg..7=Dom
   if (jsGetDay0_6 === 0) return 7;
   return jsGetDay0_6;
 }
@@ -897,12 +888,10 @@ function getIdiomaTexto(idioma) {
   return "o idioma";
 }
 
-// Define dias de estudo automáticos conforme frequência
 function getDefaultStudyDays(frequenciaPreferida) {
-  // 1..7 (Seg..Dom)
   if (frequenciaPreferida === "diario") return [1, 2, 3, 4, 5, 6, 7];
-  if (frequenciaPreferida === "5x") return [1, 2, 3, 4, 5]; // seg-sex
-  if (frequenciaPreferida === "3x") return [1, 3, 5]; // seg/qua/sex
+  if (frequenciaPreferida === "5x") return [1, 2, 3, 4, 5];
+  if (frequenciaPreferida === "3x") return [1, 3, 5];
   return null;
 }
 
@@ -924,24 +913,18 @@ function isStudyDayToday(aluno, now = new Date()) {
 function shouldSendNudge(aluno, now = new Date()) {
   if (!aluno.lastMessageAt) return false;
   if (aluno.frequenciaPreferida === "livre") return false;
-
-  // só depois do onboarding completo
   if (aluno.stage && aluno.stage !== "learning") return false;
 
-  // não mandar se já falou nas últimas 12h
   const diffSinceMsg = now - new Date(aluno.lastMessageAt);
   if (diffSinceMsg < 12 * 60 * 60 * 1000) return false;
 
-  // respeita janela mínima entre nudges
   if (aluno.lastNudgeAt) {
     const diffSinceNudge = now - new Date(aluno.lastNudgeAt);
     if (diffSinceNudge < MIN_NUDGE_GAP_MS) return false;
   }
 
-  // só nos dias certos
   if (!isStudyDayToday(aluno, now)) return false;
 
-  // hora-alvo
   const targetHour = Number.isFinite(aluno.preferredStudyHour) ? aluno.preferredStudyHour : DEFAULT_NUDGE_HOUR;
   const hour = now.getHours();
 
@@ -967,7 +950,6 @@ async function verificarELancarLembretes() {
       if (!shouldSendNudge(aluno, agora)) continue;
 
       const msg = montarMensagemNudge(aluno);
-
       aluno.lastNudgeAt = agora;
       aluno.nudgeCount = (aluno.nudgeCount || 0) + 1;
 
@@ -981,13 +963,12 @@ async function verificarELancarLembretes() {
 
 setInterval(verificarELancarLembretes, REMINDER_CHECK_INTERVAL_MS);
 
-/** ---------- LÓGICA PRINCIPAL DE MENSAGEM ---------- **/
+/** ---------- LÓGICA PRINCIPAL ---------- **/
 
 async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
   let aluno = students[numeroAluno];
   const agora = new Date();
 
-  // Se não está em memória, tenta buscar do Firestore
   if (!aluno) {
     const fromDb = await loadStudentFromFirestore(numeroAluno);
     if (fromDb) {
@@ -1006,7 +987,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
         lastNudgeAt: fromDb.lastNudgeAt || null,
         nudgeCount: fromDb.nudgeCount || 0,
 
-        // ✅ plano
         plan: fromDb.plan || "free",
         premiumUntil: fromDb.premiumUntil || null,
         paymentProvider: fromDb.paymentProvider || null,
@@ -1018,7 +998,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     }
   }
 
-  // Novo aluno
   if (!aluno) {
     aluno = {
       stage: "ask_name",
@@ -1047,7 +1026,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
       celebrations: null,
 
-      // ✅ plano
       plan: "free",
       premiumUntil: null,
       paymentProvider: null,
@@ -1085,7 +1063,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   // ✅ PAYWALL: se não for premium e estourou limite, bloqueia e oferece Premium
   const premium = isPremium(aluno, agora);
   if (!premium && dailyCount > FREE_DAILY_LIMIT) {
-    // envia oferta 1x por janela
     if (canSendPaywallPrompt(aluno, agora)) {
       const offer = montarMensagemOfertaPremium(numeroAluno);
       aluno.lastPaywallPromptAt = agora;
@@ -1103,7 +1080,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // ✅ Atalho: se o aluno pedir premium, manda oferta imediatamente (sem depender do limite)
+  // ✅ Atalho: se o aluno pedir premium
   const textoNormQuick = normalizarTexto(texto || "");
   const tipoQuick = detectarTipoMensagem(textoNormQuick);
   if (tipoQuick === "pedido_premium") {
@@ -1116,7 +1093,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // ✅ Permitir troca de modo a qualquer momento
+  // ✅ Troca de modo
   const comandoModo = detectarComandoModo(texto || "");
   if (comandoModo && aluno.stage !== "ask_name" && aluno.stage !== "ask_language") {
     aluno.chatMode = comandoModo;
@@ -1131,7 +1108,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // 1) Perguntar / guardar nome
+  // Onboarding
   if (aluno.stage === "ask_name" && !aluno.nome) {
     const nome = extrairNome(texto) || "Aluno";
     aluno.nome = nome;
@@ -1167,7 +1144,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     const { nivelPercebido, nivelCEFR } = inferirNivelPercebido(texto);
     aluno.nivelPercebido = nivelPercebido;
     aluno.nivel = aluno.nivel || nivelCEFR;
-
     aluno.stage = "ask_difficulty";
 
     await enviarMensagemWhatsApp(
@@ -1192,10 +1168,8 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     );
   } else if (aluno.stage === "ask_frequency") {
     aluno.frequenciaPreferida = inferirFrequenciaPreferida(texto);
-
     aluno.preferredStudyDays = getDefaultStudyDays(aluno.frequenciaPreferida);
     aluno.preferredStudyHour = DEFAULT_NUDGE_HOUR;
-
     aluno.stage = "ask_mode";
 
     await enviarMensagemWhatsApp(
@@ -1213,7 +1187,8 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       aluno.chatMode = escolheuAprender ? "aprender" : "conversa";
       aluno.stage = "learning";
 
-      const idiomaTexto = aluno.idioma === "ingles" ? "inglês" : aluno.idioma === "frances" ? "francês" : "inglês e francês";
+      const idiomaTexto =
+        aluno.idioma === "ingles" ? "inglês" : aluno.idioma === "frances" ? "francês" : "inglês e francês";
 
       await enviarMensagemWhatsApp(
         numeroAluno,
@@ -1244,12 +1219,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
     const confirmacao = isConfirmMessage(texto);
 
-    // ✅ FREE também pode ter áudio (como você pediu)
-    // Regras:
-    // - manda áudio se aluno pedir explicitamente (free e premium)
-    // - espelha áudio em modo conversa quando aluno enviar áudio (free e premium)
     const querAudioPorPedido = userQuerAudio(texto, isAudio);
-
     const chatMode = aluno.chatMode || "conversa";
     const espelharAudio = isAudio && chatMode === "conversa";
 
@@ -1314,12 +1284,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 }
 
 /** ---------- STRIPE WEBHOOK (OPCIONAL) ---------- **/
-// ✅ Endpoint público: https://SEU_RENDER_URL/stripe/webhook
-// ✅ Precisa preencher STRIPE_WEBHOOK_SECRET no .env
-// ✅ Este webhook só consegue ativar o aluno automaticamente se o Checkout tiver client_reference_id = "whatsapp:351...."
-//     Por isso nós geramos o link Stripe com client_reference_id baseado no número.
-
-app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
+app.post("/stripe/webhook", async (req, res) => {
   try {
     if (!stripe) return res.status(400).send("stripe_not_configured");
     const whsec = process.env.STRIPE_WEBHOOK_SECRET;
@@ -1329,59 +1294,50 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
     let event;
 
     try {
+      // req.body aqui é Buffer (raw)
       event = stripe.webhooks.constructEvent(req.body, sig, whsec);
     } catch (err) {
       console.error("❌ Stripe webhook signature error:", err.message);
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
 
-    // Eventos comuns:
-    // - checkout.session.completed (payment link)
-    // - invoice.payment_succeeded (subscription renew)
-    const type = event.type;
-
-    if (type === "checkout.session.completed") {
+    if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const ref = session.client_reference_id || "";
       const phone = ref.startsWith("whatsapp:") ? ref.replace("whatsapp:", "") : null;
 
       if (phone) {
         const now = new Date();
-        // fallback: 30 dias (se for assinatura, preferimos buscar subscription)
         let premiumUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
-        // Se tiver subscription, pega período real
         if (session.subscription) {
           try {
             const sub = await stripe.subscriptions.retrieve(session.subscription);
-            if (sub?.current_period_end) {
-              premiumUntil = new Date(sub.current_period_end * 1000);
-            }
+            if (sub?.current_period_end) premiumUntil = new Date(sub.current_period_end * 1000);
           } catch (e) {
             console.warn("⚠️ Não consegui buscar subscription:", e.message);
           }
         }
 
-        // Atualiza no Firestore
-        const docRef = db.collection("students").doc(`whatsapp:${phone}`);
-        await docRef.set(
-          {
-            plan: "premium",
-            paymentProvider: "stripe",
-            premiumUntil,
-            updatedAt: new Date(),
-          },
-          { merge: true }
-        );
+        if (db) {
+          const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+          await docRef.set(
+            {
+              plan: "premium",
+              paymentProvider: "stripe",
+              premiumUntil,
+              updatedAt: new Date(),
+            },
+            { merge: true }
+          );
+        }
 
-        // Atualiza cache se existir
         if (students[phone]) {
           students[phone].plan = "premium";
           students[phone].paymentProvider = "stripe";
           students[phone].premiumUntil = premiumUntil;
         }
 
-        // Mensagem de confirmação
         await enviarMensagemWhatsApp(
           phone,
           "🎉 Pagamento confirmado! Seu **Acesso Premium** foi ativado.\nAgora você pode praticar sem limites ✅\n\nO que você quer praticar agora?"
@@ -1397,8 +1353,6 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
 });
 
 /** ---------- ADMIN: ativar Premium manual (Pix/Angola) ---------- **/
-// ✅ Exemplo:
-// /admin/activate?token=SEU_ADMIN_TOKEN&phone=2449...&days=30&provider=angola_manual
 app.get("/admin/activate", async (req, res) => {
   try {
     const token = req.query.token;
@@ -1407,22 +1361,23 @@ app.get("/admin/activate", async (req, res) => {
     const phone = String(req.query.phone || "").replace(/\D/g, "");
     const days = Number(req.query.days || 30);
     const provider = String(req.query.provider || "manual");
-
     if (!phone) return res.status(400).send("phone_required");
 
     const now = new Date();
     const premiumUntil = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
-    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
-    await docRef.set(
-      {
-        plan: "premium",
-        paymentProvider: provider,
-        premiumUntil,
-        updatedAt: new Date(),
-      },
-      { merge: true }
-    );
+    if (db) {
+      const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+      await docRef.set(
+        {
+          plan: "premium",
+          paymentProvider: provider,
+          premiumUntil,
+          updatedAt: new Date(),
+        },
+        { merge: true }
+      );
+    }
 
     if (students[phone]) {
       students[phone].plan = "premium";
@@ -1455,7 +1410,7 @@ app.post("/zapi-webhook", async (req, res) => {
 
     const msgId = data.messageId;
     const numeroAluno = String(data.phone || "").replace(/\D/g, "");
-    const momentVal = data.momment; // (Z-API às vezes manda "momment")
+    const momentVal = data.momment;
     const texto = data.text?.message || null;
 
     let audioUrl =
@@ -1543,7 +1498,6 @@ app.get("/admin/dashboard", (req, res) => {
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
 
-    // ✅ paywall
     plan: dados.plan || "free",
     premiumUntil: dados.premiumUntil || null,
     dailyCount: dados.dailyCount || 0,
@@ -1728,7 +1682,6 @@ app.get("/admin/stats", (req, res) => {
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
 
-    // ✅ plano
     plan: dados.plan || "free",
     premiumUntil: dados.premiumUntil || null,
     dailyCount: dados.dailyCount || 0,
@@ -1749,14 +1702,12 @@ app.get("/admin/stats", (req, res) => {
   });
 });
 
-// Rota de teste
 app.get("/", (req, res) => {
   res.send(
     "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO + PERFIL + LEMBRETES + PAYWALL 30/DIA + OFERTA AUTOMÁTICA + STRIPE WEBHOOK opcional) está a correr ✅"
   );
 });
 
-// Iniciar servidor
 app.listen(PORT, () => {
   console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`);
 });

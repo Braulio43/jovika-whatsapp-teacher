@@ -1,0 +1,12 @@
+# Ignorar environment secrets
+.env
+
+# Ignorar node modules
+node_modules/
+
+# Ignorar ficheiros temporários
+npm-debug.log
+yarn-error.log
+
+# Ignore macOS files
+.DS_Store

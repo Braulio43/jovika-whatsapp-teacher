@@ -1,6 +1,6 @@
 // server.js – Kito, professor da Jovika Academy
 // Z-API + memória + módulos + Dashboard + Firestore + PERFIL PEDAGÓGICO
-// + LEMBRETES (com fallback) + PAYWALL (FREE 30 msgs/dia) + OFERTA por país
+// + PAYWALL (FREE 30 msgs/dia) + OFERTA por país
 // + ÁUDIO SOMENTE PREMIUM (quando aluno pede ou em modo conversa com áudio)
 // + STRIPE webhook (opcional, auto-unlock)
 
@@ -9,28 +9,28 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import axios from "axios";
 import OpenAI from "openai";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore (deve exportar db)
 import Stripe from "stripe";
 
 dotenv.config();
 
 console.log(
-  "🔥 KITO v6.3 – ÁUDIO SÓ PREMIUM + PAYWALL 30/DIA + OFERTA por país + Stripe webhook opcional 🔥"
+  "🔥 KITO v6.4 – PAYWALL 30/DIA (sempre com link/dados) + ÁUDIO só Premium (sem mostrar limite) + Stripe webhook FIX (raw body) 🔥"
 );
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 /**
- * ⚠️ Stripe webhook precisa de raw body, então:
- * - NÃO use bodyParser.json() globalmente para /stripe/webhook
- * - Use raw parser só na rota do webhook
+ * ✅ Stripe webhook precisa de RAW body, então:
+ * - NÃO pode passar pelo bodyParser.json() antes.
+ * A correção é: aplicar json parser em todas as rotas EXCETO /stripe/webhook.
  */
-app.use(bodyParser.json());
+const jsonParser = bodyParser.json();
+app.use((req, res, next) => {
+  if (req.originalUrl === "/stripe/webhook") return next();
+  return jsonParser(req, res, next);
+});
 
 const stripe =
   process.env.STRIPE_SECRET_KEY && process.env.STRIPE_SECRET_KEY.trim()
@@ -51,7 +51,7 @@ if (!db) {
 // FREE: 30 mensagens por dia (do aluno)
 const FREE_DAILY_LIMIT = Number(process.env.FREE_DAILY_LIMIT || 30);
 
-// Anti-spam de oferta: no máximo 1 oferta por janela
+// Anti-spam de oferta (só para não spammar se o aluno insistir em premium/áudio)
 const PAYWALL_COOLDOWN_HOURS = Number(process.env.PAYWALL_COOLDOWN_HOURS || 20);
 
 // Link Stripe Payment Link base (vai anexar client_reference_id)
@@ -188,19 +188,19 @@ function montarMensagemOfertaPremiumComLimite(phone) {
     return (
       base +
       `👉 *Ativar Premium por 30 dias (${BR_PIX_AMOUNT})*\n` +
-      `**Pix (CPF):** ${BR_PIX_KEY}\n` +
-      `**Nome:** ${BR_PIX_NAME}\n` +
-      `**Banco:** ${BR_PIX_BANK}\n\n` +
-      `Após o pagamento, envie aqui o *comprovativo* que eu libero ✅`
+      `Pix (CPF): ${BR_PIX_KEY}\n` +
+      `Nome: ${BR_PIX_NAME}\n` +
+      `Banco: ${BR_PIX_BANK}\n\n` +
+      `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
     );
   }
 
   return (
     base +
     `👉 *Ativar Premium por 30 dias (${AO_AMOUNT})*\n` +
-    `**Nome:** ${AO_BANK_NAME}\n` +
-    `**IBAN:** ${AO_IBAN}\n\n` +
-    `Após o pagamento, envie aqui o *comprovativo* que eu libero ✅`
+    `Nome: ${AO_BANK_NAME}\n` +
+    `IBAN: ${AO_IBAN}\n\n` +
+    `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
   );
 }
 
@@ -230,19 +230,19 @@ function montarMensagemPremiumPorAudio(phone) {
     return (
       base +
       `👉 *Ativar Premium por 30 dias (${BR_PIX_AMOUNT})*\n` +
-      `**Pix (CPF):** ${BR_PIX_KEY}\n` +
-      `**Nome:** ${BR_PIX_NAME}\n` +
-      `**Banco:** ${BR_PIX_BANK}\n\n` +
-      `Após o pagamento, envie aqui o *comprovativo* que eu libero ✅`
+      `Pix (CPF): ${BR_PIX_KEY}\n` +
+      `Nome: ${BR_PIX_NAME}\n` +
+      `Banco: ${BR_PIX_BANK}\n\n` +
+      `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
     );
   }
 
   return (
     base +
     `👉 *Ativar Premium por 30 dias (${AO_AMOUNT})*\n` +
-    `**Nome:** ${AO_BANK_NAME}\n` +
-    `**IBAN:** ${AO_IBAN}\n\n` +
-    `Após o pagamento, envie aqui o *comprovativo* que eu libero ✅`
+    `Nome: ${AO_BANK_NAME}\n` +
+    `IBAN: ${AO_IBAN}\n\n` +
+    `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
   );
 }
 
@@ -352,7 +352,14 @@ function detectarTipoMensagem(textoNorm = "") {
 
   if (isPerguntaSobreKito) return "pergunta_sobre_kito";
 
-  if (textoNorm.includes("premium") || textoNorm.includes("assinar") || textoNorm.includes("pagar")) return "pedido_premium";
+  if (
+    textoNorm.includes("premium") ||
+    textoNorm.includes("assinar") ||
+    textoNorm.includes("pagar") ||
+    textoNorm.includes("quero pagar") ||
+    textoNorm.includes("quero assinar")
+  )
+    return "pedido_premium";
 
   return "geral";
 }
@@ -510,6 +517,7 @@ IMPORTANTE:
 - Se tipo="pergunta_sobre_kito": responda direto (sem lição, sem tradução).
 - Se tipo="pedido_traducao": traduza e explique curto.
 - Se tipo="pedido_premium": responda curto, convidando para Premium (sem falar de limite se não for o caso).
+- Se o aluno disser "I'm fine and you?" / "How are you?" etc, responda natural (ex: "I'm good, thanks! And you?") em vez de traduzir.
 
 ESTILO:
 - Português do Brasil (você).
@@ -693,29 +701,32 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   const premium = isPremium(aluno, agora);
   const querAudioPorPedido = userQuerAudio(texto, isAudio);
 
-  // ✅ REGRA 1: Se pedir áudio e NÃO for premium, oferecer premium SEM falar de limite
+  /**
+   * ✅ REGRA A (prioridade máxima):
+   * Se pedir áudio e NÃO for premium -> oferta Premium SEM falar do limite.
+   * (Mesmo que ele esteja perto do limite, não mistura as mensagens.)
+   */
   if (querAudioPorPedido && !premium) {
+    // opcional: respeitar cooldown para não spammar se ele insistir várias vezes
+    if (canSendPaywallPrompt(aluno, agora)) aluno.lastPaywallPromptAt = agora;
+
     const msg = montarMensagemPremiumPorAudio(numeroAluno);
-    aluno.lastPaywallPromptAt = agora;
     aluno.history.push({ role: "assistant", content: msg });
     await enviarMensagemWhatsApp(numeroAluno, msg);
     await saveStudentToFirestore(numeroAluno, aluno);
     return;
   }
 
-  // ✅ REGRA 2: Paywall só quando passar do limite (não antes)
+  /**
+   * ✅ REGRA B:
+   * Paywall só quando PASSAR do limite.
+   * E quando passar -> sempre enviar a oferta completa com link/dados (NUNCA mensagem sem link).
+   */
   if (!premium && dailyCount > FREE_DAILY_LIMIT) {
-    if (canSendPaywallPrompt(aluno, agora)) {
-      const offer = montarMensagemOfertaPremiumComLimite(numeroAluno);
-      aluno.lastPaywallPromptAt = agora;
-      aluno.history.push({ role: "assistant", content: offer });
-      await enviarMensagemWhatsApp(numeroAluno, offer);
-    } else {
-      await enviarMensagemWhatsApp(
-        numeroAluno,
-        `Você já atingiu o limite do *plano grátis (${FREE_DAILY_LIMIT} mensagens hoje)*.\nVolte amanhã ou ative o Premium para continuar agora.`
-      );
-    }
+    const offer = montarMensagemOfertaPremiumComLimite(numeroAluno);
+    aluno.lastPaywallPromptAt = agora;
+    aluno.history.push({ role: "assistant", content: offer });
+    await enviarMensagemWhatsApp(numeroAluno, offer);
     await saveStudentToFirestore(numeroAluno, aluno);
     return;
   }
@@ -897,9 +908,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
   aluno.history.push({ role: "assistant", content: respostaKito });
 
-  // ✅ ÁUDIO SÓ PREMIUM:
-  // - Se premium e aluno pedir áudio -> manda TTS do trecho
-  // - Se premium e aluno mandar áudio em modo conversa -> espelha áudio (opcional)
+  // ✅ ÁUDIO SÓ PREMIUM
   const chatMode = aluno.chatMode || "conversa";
   const espelharAudioPremium = Boolean(process.env.MIRROR_AUDIO_PREMIUM === "true");
   const deveMandarAudio = premium && (querAudioPorPedido || (isAudio && chatMode === "conversa" && espelharAudioPremium));
@@ -946,6 +955,7 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
         const now = new Date();
         let premiumUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
+        // se for subscription, tenta buscar period_end
         if (session.subscription) {
           try {
             const sub = await stripe.subscriptions.retrieve(session.subscription);
@@ -966,6 +976,7 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
           { merge: true }
         );
 
+        // atualiza cache
         if (students[phone]) {
           students[phone].plan = "premium";
           students[phone].paymentProvider = "stripe";
@@ -1056,7 +1067,7 @@ app.post("/zapi-webhook", async (req, res) => {
     const profileName = data.senderName || data.chatName || "Aluno";
 
     if (!texto) {
-      // Se vier sem texto, só ignorar (porque no teu fluxo atual áudio/transcrição não está ativo aqui)
+      // se vier sem texto, ignora (o teu fluxo de transcrição não está ativo aqui)
       return res.status(200).send("no_text");
     }
 

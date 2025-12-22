@@ -1,21 +1,25 @@
 // server.js – Kito, professor da Jovika Academy
 // Z-API + memória + módulos + Dashboard + Firestore + PERFIL PEDAGÓGICO
 // + PAYWALL (FREE 30 msgs/dia) + OFERTA por país
-// + ÁUDIO SOMENTE PREMIUM (quando aluno pede ou em modo conversa com áudio)
-// + STRIPE webhook (opcional, auto-unlock)
+// + ÁUDIO SOMENTE PREMIUM (somente quando aluno pede KITO enviar áudio)
+// + STRIPE webhook (auto-unlock) + TRANSCRIÇÃO de áudio do aluno (FREE OK)
 
 import express from "express";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import axios from "axios";
 import OpenAI from "openai";
-import { db } from "./firebaseAdmin.js"; // Firestore (deve exportar db)
+import { db } from "./firebaseAdmin.js";
 import Stripe from "stripe";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
 
 dotenv.config();
 
 console.log(
-  "🔥 KITO v6.4 – PAYWALL 30/DIA (sempre com link/dados) + ÁUDIO só Premium (sem mostrar limite) + Stripe webhook FIX (raw body) 🔥"
+  "🔥 KITO v6.5 – TRANSCRIÇÃO ÁUDIO (FREE) + Paywall correto + Áudio só Premium quando pedido + Firestore fallback blindado + Stripe webhook FIX 🔥"
 );
 
 const app = express();
@@ -23,8 +27,7 @@ const PORT = process.env.PORT || 10000;
 
 /**
  * ✅ Stripe webhook precisa de RAW body, então:
- * - NÃO pode passar pelo bodyParser.json() antes.
- * A correção é: aplicar json parser em todas as rotas EXCETO /stripe/webhook.
+ * - json parser em tudo EXCETO /stripe/webhook
  */
 const jsonParser = bodyParser.json();
 app.use((req, res, next) => {
@@ -47,40 +50,34 @@ if (!db) {
 }
 
 /** ---------- CONFIG PAYWALL / PLANOS ---------- **/
-
-// FREE: 30 mensagens por dia (do aluno)
 const FREE_DAILY_LIMIT = Number(process.env.FREE_DAILY_LIMIT || 30);
-
-// Anti-spam de oferta (só para não spammar se o aluno insistir em premium/áudio)
 const PAYWALL_COOLDOWN_HOURS = Number(process.env.PAYWALL_COOLDOWN_HOURS || 20);
 
-// Link Stripe Payment Link base (vai anexar client_reference_id)
 const STRIPE_PAYMENT_LINK_URL = String(
   process.env.STRIPE_PAYMENT_LINK_URL || "https://buy.stripe.com/00w28qchVgVQdfm1eS9ws01"
 ).trim();
 
-// Preço exibido na mensagem (PT/INT)
 const PREMIUM_PRICE_EUR = String(process.env.PREMIUM_PRICE_EUR || "9,99€").trim();
-const PREMIUM_PERIOD_TEXT = String(process.env.PREMIUM_PERIOD_TEXT || "mês").trim(); // "mês" ou "30 dias"
+const PREMIUM_PERIOD_TEXT = String(process.env.PREMIUM_PERIOD_TEXT || "mês").trim();
 
-// ✅ Brasil (PIX manual) via ENV (Render)
+// Brasil (PIX manual) via ENV (Render)
 const BR_PIX_NAME = String(process.env.BR_PIX_NAME || "Ademandra Francisco");
 const BR_PIX_BANK = String(process.env.BR_PIX_BANK || "Nubank");
 const BR_PIX_KEY = String(process.env.BR_PIX_KEY || "23848408864");
 const BR_PIX_AMOUNT = String(process.env.BR_PIX_AMOUNT || "R$ 49,90");
 
-// ✅ Angola (transferência manual) via ENV (Render)
+// Angola (transferência manual) via ENV (Render)
 const AO_BANK_NAME = String(process.env.AO_BANK_NAME || "Joana Bamba");
 const AO_IBAN = String(process.env.AO_IBAN || "AO06000500002771833310197");
 const AO_AMOUNT = String(process.env.AO_AMOUNT || "13.000 Kz");
 
-/** ---------- “DB” em memória (cache) ---------- **/
+/** ---------- memória ---------- **/
 const students = {};
 const processedMessages = new Set();
 const lastMomentByPhone = {};
 const lastTextByPhone = {};
 
-/** ---------- Trilhas de ensino (módulos) ---------- **/
+/** ---------- Trilhas ---------- **/
 const learningPath = {
   ingles: [
     { id: "en_a0_1", title: "Cumprimentos e apresentações", level: "A0", steps: 4, goal: "Dizer olá e se apresentar." },
@@ -126,17 +123,8 @@ function isConfirmMessage(texto = "") {
   return palavras.some((p) => t === p || t.includes(p));
 }
 
-function formatDate(d) {
-  if (!d) return "-";
-  try {
-    return new Date(d).toLocaleString("pt-PT");
-  } catch {
-    return String(d);
-  }
-}
-
 function todayKeyUTC(now = new Date()) {
-  return now.toISOString().slice(0, 10); // YYYY-MM-DD
+  return now.toISOString().slice(0, 10);
 }
 
 function safeToDate(val) {
@@ -146,7 +134,7 @@ function safeToDate(val) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-/** Detecta país pelo prefixo */
+/** Detecta país */
 function detectarPaisPorTelefone(phone = "") {
   const p = String(phone || "").replace(/\D/g, "");
   if (p.startsWith("351")) return "PT";
@@ -155,14 +143,14 @@ function detectarPaisPorTelefone(phone = "") {
   return "INT";
 }
 
-/** Link Stripe com client_reference_id */
+/** Stripe link */
 function gerarStripeLinkParaTelefone(phone) {
   const ref = `whatsapp:${String(phone || "").replace(/\D/g, "")}`;
   const glue = STRIPE_PAYMENT_LINK_URL.includes("?") ? "&" : "?";
   return `${STRIPE_PAYMENT_LINK_URL}${glue}client_reference_id=${encodeURIComponent(ref)}`;
 }
 
-/** ✅ Mensagem Premium quando bater o limite (COM limite) */
+/** Oferta no limite */
 function montarMensagemOfertaPremiumComLimite(phone) {
   const pais = detectarPaisPorTelefone(phone);
 
@@ -183,7 +171,6 @@ function montarMensagemOfertaPremiumComLimite(phone) {
     const link = gerarStripeLinkParaTelefone(phone);
     return base + `👉 *Ativar Premium agora (Stripe):*\n${link}\n\nAssim que o pagamento confirmar, eu libero automaticamente ✅`;
   }
-
   if (pais === "BR") {
     return (
       base +
@@ -194,7 +181,6 @@ function montarMensagemOfertaPremiumComLimite(phone) {
       `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
     );
   }
-
   return (
     base +
     `👉 *Ativar Premium por 30 dias (${AO_AMOUNT})*\n` +
@@ -204,7 +190,7 @@ function montarMensagemOfertaPremiumComLimite(phone) {
   );
 }
 
-/** ✅ Mensagem Premium quando pedir ÁUDIO (SEM falar do limite) */
+/** Oferta quando pedir KITO enviar áudio (sem falar do limite) */
 function montarMensagemPremiumPorAudio(phone) {
   const pais = detectarPaisPorTelefone(phone);
 
@@ -225,7 +211,6 @@ function montarMensagemPremiumPorAudio(phone) {
     const link = gerarStripeLinkParaTelefone(phone);
     return base + `👉 *Ativar Premium agora (Stripe):*\n${link}\n\nAssim que o pagamento confirmar, eu libero automaticamente ✅`;
   }
-
   if (pais === "BR") {
     return (
       base +
@@ -236,7 +221,6 @@ function montarMensagemPremiumPorAudio(phone) {
       `Após o pagamento, envie aqui o comprovativo que eu libero ✅`
     );
   }
-
   return (
     base +
     `👉 *Ativar Premium por 30 dias (${AO_AMOUNT})*\n` +
@@ -246,7 +230,7 @@ function montarMensagemPremiumPorAudio(phone) {
   );
 }
 
-/** Decide se é Premium */
+/** Premium? */
 function isPremium(aluno, now = new Date()) {
   const plan = aluno?.plan || "free";
   const until = safeToDate(aluno?.premiumUntil);
@@ -254,7 +238,7 @@ function isPremium(aluno, now = new Date()) {
   return plan === "premium" && !until ? true : false;
 }
 
-/** Reset/incremento do contador diário (mensagens do aluno) */
+/** contador diário */
 function updateDailyCounter(aluno, now = new Date()) {
   const key = todayKeyUTC(now);
   if (!aluno.dailyDate || aluno.dailyDate !== key) {
@@ -265,7 +249,6 @@ function updateDailyCounter(aluno, now = new Date()) {
   return aluno.dailyCount;
 }
 
-/** Pode mandar prompt de paywall agora? */
 function canSendPaywallPrompt(aluno, now = new Date()) {
   const last = safeToDate(aluno.lastPaywallPromptAt);
   if (!last) return true;
@@ -273,48 +256,43 @@ function canSendPaywallPrompt(aluno, now = new Date()) {
   return diffH >= PAYWALL_COOLDOWN_HOURS;
 }
 
-/** ---------- ÁUDIO: detectar pedido ---------- **/
-function userQuerAudio(texto = "", isAudio = false) {
+/**
+ * ✅ IMPORTANTE:
+ * - “Aluno mandou áudio” (isAudio=true) NÃO é “aluno pediu KITO enviar áudio”.
+ * Então separamos:
+ */
+function alunoPediuKitoEnviarAudio(texto = "") {
   const t = normalizarTexto(texto || "");
   const gatilhos = [
     "manda audio",
     "manda áudio",
     "envia audio",
     "envia áudio",
-    "mensagem de voz",
-    "msg de voz",
     "responde em audio",
     "responde em áudio",
     "pode enviar audio",
     "pode enviar áudio",
     "envia por audio",
     "envia por áudio",
-    "audio",
-    "áudio",
-    "pronuncia",
-    "pronúncia",
+    "me manda em audio",
+    "me manda em áudio",
   ];
-  const pediuPorTexto = gatilhos.some((p) => t.includes(p));
-  const pediuPorAudio = isAudio && gatilhos.some((p) => t.includes(p));
-  return pediuPorTexto || pediuPorAudio;
+  return gatilhos.some((p) => t.includes(p));
 }
 
-/** Modo */
+/** modos */
 function detectarComandoModo(texto = "") {
   const t = normalizarTexto(texto);
   const querConversa =
     t.includes("modo conversa") ||
     t === "conversa" ||
     t.includes("quero conversar") ||
-    t.includes("vamos conversar") ||
-    t.includes("só conversar") ||
-    t.includes("so conversar");
+    t.includes("vamos conversar");
 
   const querAprender =
     t.includes("modo aprender") ||
     t.includes("modo aula") ||
     t === "aprender" ||
-    t.includes("quero aprender") ||
     t.includes("me corrige") ||
     t.includes("corrigir");
 
@@ -323,7 +301,7 @@ function detectarComandoModo(texto = "") {
   return null;
 }
 
-/** Tipos de mensagem (evitar Kito “traduzir” quando perguntam nome) */
+/** tipos */
 function detectarTipoMensagem(textoNorm = "") {
   if (!textoNorm) return "geral";
 
@@ -364,7 +342,7 @@ function detectarTipoMensagem(textoNorm = "") {
   return "geral";
 }
 
-/** Perfil pedagógico simples */
+/** Perfil pedagógico */
 function inferirNivelPercebido(texto) {
   const t = normalizarTexto(texto);
   if (t.includes("nunca") || t.includes("zero") || t.includes("começar do zero")) return { nivelPercebido: "iniciante", nivelCEFR: "A0" };
@@ -401,7 +379,7 @@ function inferirFrequenciaPreferida(texto) {
   return "3x";
 }
 
-/** ---------- Firestore: salvar / carregar ---------- **/
+/** ---------- Firestore salvar/carregar ---------- **/
 async function saveStudentToFirestore(phone, aluno) {
   try {
     if (!db) {
@@ -435,7 +413,6 @@ async function saveStudentToFirestore(phone, aluno) {
         moduleIndex: aluno.moduleIndex ?? 0,
         moduleStep: aluno.moduleStep ?? 0,
 
-        // PAYWALL
         plan: aluno.plan ?? "free",
         premiumUntil: premiumUntil || null,
         paymentProvider: aluno.paymentProvider ?? null,
@@ -461,14 +438,15 @@ async function loadStudentFromFirestore(phone) {
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     const snap = await docRef.get();
     if (!snap.exists) return null;
-    const data = snap.data();
 
+    const data = snap.data();
     return {
       ...data,
       createdAt: safeToDate(data.createdAt) || new Date(),
       lastMessageAt: safeToDate(data.lastMessageAt) || new Date(),
       premiumUntil: safeToDate(data.premiumUntil),
       lastPaywallPromptAt: safeToDate(data.lastPaywallPromptAt),
+      updatedAt: safeToDate(data.updatedAt),
     };
   } catch (err) {
     console.error("❌ Erro ao carregar aluno do Firestore:", err?.message || err);
@@ -476,7 +454,34 @@ async function loadStudentFromFirestore(phone) {
   }
 }
 
-/** ---------- OpenAI (Kito) ---------- **/
+/** ✅ fallback blindado: se memória estiver incompleta, recarrega do Firestore */
+async function ensureStudentLoaded(numeroAluno) {
+  let aluno = students[numeroAluno];
+
+  const incompleto =
+    aluno &&
+    (
+      !aluno.stage ||
+      (aluno.stage !== "ask_name" && !aluno.nome) ||
+      (aluno.stage !== "ask_name" && aluno.stage !== "ask_language" && !aluno.idioma)
+    );
+
+  if (!aluno || incompleto) {
+    const fromDb = await loadStudentFromFirestore(numeroAluno);
+    if (fromDb) {
+      aluno = {
+        ...(aluno || {}),
+        ...fromDb,
+        history: aluno?.history || [],
+      };
+      students[numeroAluno] = aluno;
+    }
+  }
+
+  return aluno || null;
+}
+
+/** ---------- OpenAI ---------- **/
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function limparTextoResposta(txt = "") {
@@ -489,9 +494,6 @@ async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
   const ultimoUser = history.filter((m) => m.role === "user").slice(-1)[0];
   const textoDoAluno = ultimoUser ? ultimoUser.content : "(sem mensagem recente)";
 
-  console.log("🧠 Pergunta do aluno:", textoDoAluno);
-  console.log("🧠 Tipo de mensagem detectado:", tipoMensagem);
-
   const idiomaAlvo =
     aluno.idioma === "frances" ? "FRANCÊS" : aluno.idioma === "ingles" ? "INGLÊS" : "INGLÊS E FRANCÊS";
 
@@ -502,7 +504,6 @@ async function gerarRespostaKito(aluno, moduloAtual, tipoMensagem = "geral") {
 
   const step = aluno.moduleStep ?? 0;
   const totalSteps = modulo?.steps ?? 4;
-
   const modo = aluno.chatMode || "conversa";
 
   const systemPrompt = `
@@ -517,7 +518,7 @@ IMPORTANTE:
 - Se tipo="pergunta_sobre_kito": responda direto (sem lição, sem tradução).
 - Se tipo="pedido_traducao": traduza e explique curto.
 - Se tipo="pedido_premium": responda curto, convidando para Premium (sem falar de limite se não for o caso).
-- Se o aluno disser "I'm fine and you?" / "How are you?" etc, responda natural (ex: "I'm good, thanks! And you?") em vez de traduzir.
+- Se o aluno mandar áudio, responda normalmente por texto e, se pedido, corrija pronúncia por escrito.
 
 ESTILO:
 - Português do Brasil (você).
@@ -532,6 +533,9 @@ Objetivo: ${aluno.objetivo || "não definido"}
 
 MÓDULO:
 ${modulo?.title || "Introdução"} — passo ${step} de ${totalSteps}
+
+MENSAGEM DO ALUNO:
+${textoDoAluno}
   `.trim();
 
   const mensagens = [{ role: "system", content: systemPrompt }, ...history.slice(-10)];
@@ -545,14 +549,11 @@ ${modulo?.title || "Introdução"} — passo ${step} de ${totalSteps}
   return limparTextoResposta(textoGerado);
 }
 
-/** ---------- Enviar mensagem pela Z-API ---------- **/
+/** ---------- Z-API send text ---------- **/
 async function enviarMensagemWhatsApp(phone, message) {
   try {
     const msg = String(message || "").trim();
-    if (!msg) {
-      console.warn("⚠️ Z-API: tentou enviar mensagem vazia — ignorado.");
-      return;
-    }
+    if (!msg) return;
 
     const instanceId = process.env.ZAPI_INSTANCE_ID;
     const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
@@ -569,14 +570,13 @@ async function enviarMensagemWhatsApp(phone, message) {
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
 
-    const resp = await axios.post(url, payload, { headers });
-    console.log("📤 Mensagem enviada via Z-API para", phone, "resp:", resp.data);
+    await axios.post(url, payload, { headers });
   } catch (err) {
     console.error("❌ Erro ao enviar mensagem via Z-API:", err.response?.data || err.message);
   }
 }
 
-/** ---------- ÁUDIO (TTS) – SOMENTE PREMIUM ---------- **/
+/** ---------- ÁUDIO (TTS) – Premium only (quando aluno pede Kito enviar áudio) ---------- **/
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
     const clean = String(texto || "").trim();
@@ -587,7 +587,7 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
         ? "Speak in clear, neutral English with a natural MALE voice. Talk slowly and clearly for beginners."
         : idiomaAlvo === "frances"
         ? "Parle en français standard de France, voix masculine naturelle, lent et très clair pour débutants."
-        : "Speak clearly and naturally. If Portuguese, use Brazilian Portuguese. If French, use France accent.";
+        : "Speak clearly and naturally.";
 
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
@@ -608,19 +608,13 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
 
 async function enviarAudioWhatsApp(phone, audioBase64) {
   try {
-    if (!audioBase64) {
-      console.warn("⚠️ Áudio vazio (base64 null) — não enviou.");
-      return;
-    }
+    if (!audioBase64) return;
 
     const instanceId = process.env.ZAPI_INSTANCE_ID;
     const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
-    if (!instanceId || !instanceToken) {
-      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no ENV (áudio)");
-      return;
-    }
+    if (!instanceId || !instanceToken) return;
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
     const payload = { phone, audio: audioBase64, viewOnce: false, waveform: true };
@@ -628,28 +622,50 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
 
-    const resp = await axios.post(url, payload, { headers });
-    console.log("📤 Áudio enviado via Z-API para", phone, "resp:", resp.data);
+    await axios.post(url, payload, { headers });
   } catch (err) {
     console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
+  }
+}
+
+/** ---------- ✅ TRANSCRIÇÃO de ÁUDIO do aluno (para o modo grátis funcionar) ---------- **/
+async function transcreverAudioFromUrl(audioUrl) {
+  const tmpDir = os.tmpdir();
+  const filePath = path.join(tmpDir, `kito-audio-${randomUUID()}.ogg`);
+
+  try {
+    const resp = await axios.get(audioUrl, { responseType: "arraybuffer" });
+    fs.writeFileSync(filePath, Buffer.from(resp.data));
+
+    const fileStream = fs.createReadStream(filePath);
+
+    // modelo de transcrição
+    const model = process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+
+    const tr = await openai.audio.transcriptions.create({
+      file: fileStream,
+      model,
+      // language opcional: "pt" "en" "fr" (deixa automático por enquanto)
+    });
+
+    const text = (tr?.text || "").trim();
+    return text || null;
+  } catch (err) {
+    console.error("❌ Erro transcrevendo áudio:", err.response?.data || err.message);
+    return null;
+  } finally {
+    try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch {}
   }
 }
 
 /** ---------- LÓGICA PRINCIPAL ---------- **/
 async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
   const agora = new Date();
-  let aluno = students[numeroAluno];
 
-  // (1) Carrega do Firestore se não tem em memória
-  if (!aluno) {
-    const fromDb = await loadStudentFromFirestore(numeroAluno);
-    if (fromDb) {
-      aluno = { ...fromDb, history: [] };
-      students[numeroAluno] = aluno;
-    }
-  }
+  // ✅ garante aluno carregado e não “incompleto”
+  let aluno = await ensureStudentLoaded(numeroAluno);
 
-  // (2) Se continua nulo, cria novo
+  // novo aluno
   if (!aluno) {
     aluno = {
       stage: "ask_name",
@@ -668,7 +684,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
       moduleIndex: 0,
       moduleStep: 0,
 
-      // paywall
       plan: "free",
       premiumUntil: null,
       paymentProvider: null,
@@ -690,24 +705,22 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Atualiza stats básicos
+  // stats
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
 
-  // Conta mensagens do aluno por dia (persistente)
+  // contador diário
   const dailyCount = updateDailyCounter(aluno, agora);
-
   const premium = isPremium(aluno, agora);
-  const querAudioPorPedido = userQuerAudio(texto, isAudio);
+
+  // ✅ só é “pedido de áudio” se o texto pedir o Kito enviar áudio
+  const pediuKitoAudio = alunoPediuKitoEnviarAudio(texto || "");
 
   /**
-   * ✅ REGRA A (prioridade máxima):
-   * Se pedir áudio e NÃO for premium -> oferta Premium SEM falar do limite.
-   * (Mesmo que ele esteja perto do limite, não mistura as mensagens.)
+   * REGRA 1: se o aluno pedir KITO enviar áudio e NÃO for premium -> oferta premium (sem falar do limite)
    */
-  if (querAudioPorPedido && !premium) {
-    // opcional: respeitar cooldown para não spammar se ele insistir várias vezes
+  if (pediuKitoAudio && !premium) {
     if (canSendPaywallPrompt(aluno, agora)) aluno.lastPaywallPromptAt = agora;
 
     const msg = montarMensagemPremiumPorAudio(numeroAluno);
@@ -718,9 +731,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   }
 
   /**
-   * ✅ REGRA B:
-   * Paywall só quando PASSAR do limite.
-   * E quando passar -> sempre enviar a oferta completa com link/dados (NUNCA mensagem sem link).
+   * REGRA 2: paywall só quando ultrapassar 30 (e sempre com link/dados)
    */
   if (!premium && dailyCount > FREE_DAILY_LIMIT) {
     const offer = montarMensagemOfertaPremiumComLimite(numeroAluno);
@@ -731,10 +742,10 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Histórico do usuário
+  // histórico user
   aluno.history.push({ role: "user", content: String(texto || "") });
 
-  // Atalho: aluno pede premium -> manda oferta (sem falar de limite)
+  // aluno pede premium
   const textoNormQuick = normalizarTexto(texto || "");
   const tipoQuick = detectarTipoMensagem(textoNormQuick);
   if (tipoQuick === "pedido_premium") {
@@ -746,7 +757,7 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Troca de modo
+  // troca de modo
   const comandoModo = detectarComandoModo(texto || "");
   if (comandoModo && aluno.stage !== "ask_name" && aluno.stage !== "ask_language") {
     aluno.chatMode = comandoModo;
@@ -761,11 +772,10 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Onboarding
+  // onboarding
   if (aluno.stage === "ask_name" && !aluno.nome) {
     aluno.nome = extrairNome(texto) || "Aluno";
     aluno.stage = "ask_language";
-
     const msg = `Perfeito, ${aluno.nome}! 😄 Agora me conta: você quer começar por inglês, francês ou os dois?`;
     aluno.history.push({ role: "assistant", content: msg });
     await enviarMensagemWhatsApp(numeroAluno, msg);
@@ -814,7 +824,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   if (aluno.stage === "ask_difficulty") {
     aluno.maiorDificuldade = inferirMaiorDificuldade(texto);
     aluno.stage = "ask_preference_format";
-
     const msg = "Ótimo 😊 Você prefere que eu explique por mensagem escrita, por áudio (Premium) ou misturando?";
     aluno.history.push({ role: "assistant", content: msg });
     await enviarMensagemWhatsApp(numeroAluno, msg);
@@ -825,7 +834,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   if (aluno.stage === "ask_preference_format") {
     aluno.preferenciaFormato = inferirPreferenciaFormato(texto);
     aluno.stage = "ask_frequency";
-
     const msg = "Show! Você prefere que eu te puxe todos os dias, 3x por semana, 5x por semana ou só quando você falar comigo?";
     aluno.history.push({ role: "assistant", content: msg });
     await enviarMensagemWhatsApp(numeroAluno, msg);
@@ -836,7 +844,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   if (aluno.stage === "ask_frequency") {
     aluno.frequenciaPreferida = inferirFrequenciaPreferida(texto);
     aluno.stage = "ask_mode";
-
     const msg =
       "Antes de começarmos: você quer que eu seja mais como parceiro de conversa ou como professor corrigindo?\n\nResponda:\n1) conversar\n2) aprender\n\nVocê pode mudar quando quiser: modo conversa / modo aprender.";
     aluno.history.push({ role: "assistant", content: msg });
@@ -873,22 +880,20 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     return;
   }
 
-  // Learning
+  // learning
   if (aluno.stage !== "learning") aluno.stage = "learning";
   if (!aluno.objetivo) aluno.objetivo = texto;
 
-  const textoNorm = normalizarTexto(texto || "");
-  const tipoMensagem = detectarTipoMensagem(textoNorm);
+  const tipoMensagem = detectarTipoMensagem(normalizarTexto(texto || ""));
 
   const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
   const trilha = learningPath[idiomaChave] || learningPath["ingles"];
 
   let moduleIndex = aluno.moduleIndex ?? 0;
   let moduleStep = aluno.moduleStep ?? 0;
-
   if (moduleIndex >= trilha.length) moduleIndex = trilha.length - 1;
-  const moduloAtual = trilha[moduleIndex] || trilha[0];
 
+  const moduloAtual = trilha[moduleIndex] || trilha[0];
   const confirmacao = isConfirmMessage(texto);
 
   const respostaKito = await gerarRespostaKito(aluno, moduloAtual, tipoMensagem);
@@ -908,11 +913,8 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
   aluno.history.push({ role: "assistant", content: respostaKito });
 
-  // ✅ ÁUDIO SÓ PREMIUM
-  const chatMode = aluno.chatMode || "conversa";
-  const espelharAudioPremium = Boolean(process.env.MIRROR_AUDIO_PREMIUM === "true");
-  const deveMandarAudio = premium && (querAudioPorPedido || (isAudio && chatMode === "conversa" && espelharAudioPremium));
-
+  // ✅ ÁUDIO (TTS) só se premium e o aluno pediu o KITO enviar áudio
+  const deveMandarAudio = premium && pediuKitoAudio;
   const idiomaAudioAlvo = aluno.idioma === "ingles" || aluno.idioma === "frances" ? aluno.idioma : null;
 
   if (deveMandarAudio) {
@@ -920,14 +922,14 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
     await enviarAudioWhatsApp(numeroAluno, audioBase64);
   }
 
-  await sleep(800);
+  await sleep(500);
   await enviarMensagemWhatsApp(numeroAluno, respostaKito);
 
   students[numeroAluno] = aluno;
   await saveStudentToFirestore(numeroAluno, aluno);
 }
 
-/** ---------- STRIPE WEBHOOK (OPCIONAL) ---------- **/
+/** ---------- STRIPE WEBHOOK ---------- **/
 app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
   try {
     if (!stripe) return res.status(400).send("stripe_not_configured");
@@ -955,7 +957,6 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
         const now = new Date();
         let premiumUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
-        // se for subscription, tenta buscar period_end
         if (session.subscription) {
           try {
             const sub = await stripe.subscriptions.retrieve(session.subscription);
@@ -976,7 +977,6 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
           { merge: true }
         );
 
-        // atualiza cache
         if (students[phone]) {
           students[phone].plan = "premium";
           students[phone].paymentProvider = "stripe";
@@ -997,47 +997,6 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
   }
 });
 
-/** ---------- ADMIN: ativar Premium manual ---------- **/
-app.get("/admin/activate", async (req, res) => {
-  try {
-    if (!db) return res.status(500).send("firestore_off");
-
-    const token = req.query.token;
-    if (!token || token !== process.env.ADMIN_TOKEN) return res.status(401).send("Não autorizado");
-
-    const phone = String(req.query.phone || "").replace(/\D/g, "");
-    const days = Number(req.query.days || 30);
-    const provider = String(req.query.provider || "manual");
-
-    if (!phone) return res.status(400).send("phone_required");
-
-    const now = new Date();
-    const premiumUntil = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-
-    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
-    await docRef.set(
-      { plan: "premium", paymentProvider: provider, premiumUntil, updatedAt: new Date() },
-      { merge: true }
-    );
-
-    if (students[phone]) {
-      students[phone].plan = "premium";
-      students[phone].paymentProvider = provider;
-      students[phone].premiumUntil = premiumUntil;
-    }
-
-    await enviarMensagemWhatsApp(
-      phone,
-      "🎉 Pronto! Seu *Acesso Premium* foi ativado.\nAgora você pode praticar sem limites ✅\n\nO que você quer praticar agora?"
-    );
-
-    res.json({ ok: true, phone, premiumUntil, provider });
-  } catch (err) {
-    console.error("❌ admin/activate error:", err.message);
-    res.status(500).send("error");
-  }
-});
-
 /** ---------- WEBHOOK Z-API ---------- **/
 app.post("/zapi-webhook", async (req, res) => {
   const data = req.body;
@@ -1049,29 +1008,59 @@ app.post("/zapi-webhook", async (req, res) => {
     const msgId = data.messageId;
     const numeroAluno = String(data.phone || "").replace(/\D/g, "");
     const momentVal = data.momment;
-    const texto = data.text?.message || null;
 
     if (!numeroAluno) return res.status(200).send("no_phone");
 
+    // dedupe
     if (processedMessages.has(msgId)) return res.status(200).send("duplicate_ignored");
     processedMessages.add(msgId);
 
     if (momentVal && lastMomentByPhone[numeroAluno] === momentVal) return res.status(200).send("duplicate_moment_ignored");
     if (momentVal) lastMomentByPhone[numeroAluno] = momentVal;
 
-    const agora = Date.now();
-    const ultimo = lastTextByPhone[numeroAluno];
-    if (texto && ultimo && ultimo.text === texto && agora - ultimo.time < 3000) return res.status(200).send("duplicate_text_recent");
-    if (texto) lastTextByPhone[numeroAluno] = { text: texto, time: agora };
-
     const profileName = data.senderName || data.chatName || "Aluno";
 
-    if (!texto) {
-      // se vier sem texto, ignora (o teu fluxo de transcrição não está ativo aqui)
-      return res.status(200).send("no_text");
+    // 1) texto normal
+    let texto = data.text?.message || null;
+
+    // 2) se não tem texto, tenta áudio
+    // (Z-API pode enviar em formatos diferentes; tentamos vários caminhos comuns)
+    const audioUrl =
+      data.audio?.audioUrl ||
+      data.audio?.url ||
+      data.voice?.url ||
+      data.voice?.audioUrl ||
+      data.message?.audioUrl ||
+      data.message?.url ||
+      data.media?.url ||
+      null;
+
+    const isAudio = Boolean(audioUrl);
+
+    // anti-dupe de texto
+    if (texto) {
+      const now = Date.now();
+      const ultimo = lastTextByPhone[numeroAluno];
+      if (ultimo && ultimo.text === texto && now - ultimo.time < 3000) return res.status(200).send("duplicate_text_recent");
+      lastTextByPhone[numeroAluno] = { text: texto, time: now };
     }
 
-    await processarMensagemAluno({ numeroAluno, texto, profileName, isAudio: false });
+    // ✅ se for áudio e não tiver texto: transcreve
+    if (!texto && isAudio) {
+      const transcript = await transcreverAudioFromUrl(audioUrl);
+      if (!transcript) {
+        await enviarMensagemWhatsApp(
+          numeroAluno,
+          "Recebi seu áudio ✅\nMas não consegui transcrever agora. Pode me mandar a frase por texto também?"
+        );
+        return res.status(200).send("audio_no_transcript");
+      }
+      texto = transcript;
+    }
+
+    if (!texto) return res.status(200).send("no_text_or_audio");
+
+    await processarMensagemAluno({ numeroAluno, texto, profileName, isAudio });
     res.status(200).send("ok");
   } catch (erro) {
     console.error("❌ Erro no webhook Z-API:", erro?.response?.data || erro.message);
@@ -1079,7 +1068,7 @@ app.post("/zapi-webhook", async (req, res) => {
   }
 });
 
-/** ---------- DASHBOARD simples ---------- **/
+/** ---------- DASHBOARD ---------- **/
 app.get("/admin/dashboard", (req, res) => {
   const token = req.query.token;
   if (!token || token !== process.env.ADMIN_TOKEN) return res.status(401).send("Não autorizado");
@@ -1095,7 +1084,7 @@ app.get("/admin/dashboard", (req, res) => {
     dailyCount: dados.dailyCount || 0,
     dailyDate: dados.dailyDate || "-",
     plan: dados.plan || "free",
-    premiumUntil: dados.premiumUntil ? formatDate(dados.premiumUntil) : "-",
+    premiumUntil: dados.premiumUntil ? String(dados.premiumUntil) : "-",
   }));
 
   res.json({ total: alunos.length, freeDailyLimit: FREE_DAILY_LIMIT, alunos });

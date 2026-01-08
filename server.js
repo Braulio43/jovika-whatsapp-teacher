@@ -9,6 +9,9 @@
 // + Manual unlock/lock (admin endpoints)
 // + Premium expira: aviso elegante 1x/24h quando aluno tentar usar
 // + Follow-ups: 1h e 2 dias via /cron/tick (cron externo)
+// ✅ FIX CRÍTICO: Firestore não pode voltar premium->free por causa da memória do server
+//    - ensureStudentLoaded() agora SEMPRE reconcilia plan/premiumUntil com Firestore
+//    - saveStudentToFirestore() tem anti-downgrade (se Firestore está premium ativo, não sobrescreve)
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -25,7 +28,7 @@ import { randomUUID } from "node:crypto";
 dotenv.config();
 
 console.log(
-  "🔥 KITO v7.0 – HARD PAYWALL (só premium) + Anti-spam + Manual unlock + Expiração + Follow-ups (cron) 🔥"
+  "🔥 KITO v7.0 – HARD PAYWALL (só premium) + Anti-spam + Manual unlock + Expiração + Follow-ups (cron) + FIX anti-downgrade 🔥"
 );
 
 const app = express();
@@ -98,50 +101,14 @@ const lastTextByPhone = {};
 /** ---------- Trilhas ---------- **/
 const learningPath = {
   ingles: [
-    {
-      id: "en_a0_1",
-      title: "Cumprimentos e apresentações",
-      level: "A0",
-      steps: 4,
-      goal: "Dizer olá e se apresentar.",
-    },
-    {
-      id: "en_a0_2",
-      title: "Idade, cidade e país",
-      level: "A0",
-      steps: 4,
-      goal: "Dizer idade e de onde é.",
-    },
-    {
-      id: "en_a0_3",
-      title: "Rotina diária simples",
-      level: "A1",
-      steps: 4,
-      goal: "Descrever rotina no presente.",
-    },
+    { id: "en_a0_1", title: "Cumprimentos e apresentações", level: "A0", steps: 4, goal: "Dizer olá e se apresentar." },
+    { id: "en_a0_2", title: "Idade, cidade e país", level: "A0", steps: 4, goal: "Dizer idade e de onde é." },
+    { id: "en_a0_3", title: "Rotina diária simples", level: "A1", steps: 4, goal: "Descrever rotina no presente." },
   ],
   frances: [
-    {
-      id: "fr_a0_1",
-      title: "Cumprimentos básicos",
-      level: "A0",
-      steps: 4,
-      goal: "Cumprimentar e despedir-se.",
-    },
-    {
-      id: "fr_a0_2",
-      title: "Apresentar-se",
-      level: "A0",
-      steps: 4,
-      goal: "Dizer nome/idade/país.",
-    },
-    {
-      id: "fr_a0_3",
-      title: "Rotina simples",
-      level: "A1",
-      steps: 4,
-      goal: "Descrever rotina com verbos básicos.",
-    },
+    { id: "fr_a0_1", title: "Cumprimentos básicos", level: "A0", steps: 4, goal: "Cumprimentar e despedir-se." },
+    { id: "fr_a0_2", title: "Apresentar-se", level: "A0", steps: 4, goal: "Dizer nome/idade/país." },
+    { id: "fr_a0_3", title: "Rotina simples", level: "A1", steps: 4, goal: "Descrever rotina com verbos básicos." },
   ],
 };
 
@@ -659,10 +626,38 @@ function montarMensagemNaoQueroAgora() {
   ].join("\n");
 }
 
+/** ---------- ✅ util para anti-downgrade ---------- **/
+function isPremiumActiveFromData(data, now = new Date()) {
+  const plan = data?.plan || "free";
+  const until = safeToDate(data?.premiumUntil);
+  if (plan !== "premium") return false;
+  if (!until) return true; // premium sem data => considera ativo
+  return until.getTime() > now.getTime();
+}
+
 /** ---------- Firestore salvar/carregar ---------- **/
 async function saveStudentToFirestore(phone, aluno) {
   try {
     if (!db) return;
+
+    // ✅ ANTI-DOWNGRADE:
+    // Se Firestore já está premium ativo, NÃO deixar a memória (free) sobrescrever.
+    // Fazemos um get() só quando o aluno NÃO está premium em memória (para não pesar).
+    if ((aluno?.plan || "free") !== "premium") {
+      try {
+        const snap = await db.collection("students").doc(`whatsapp:${phone}`).get();
+        if (snap.exists) {
+          const existing = snap.data();
+          if (isPremiumActiveFromData(existing, new Date())) {
+            aluno.plan = "premium";
+            aluno.paymentProvider = existing.paymentProvider || aluno.paymentProvider || "manual";
+            aluno.premiumUntil = safeToDate(existing.premiumUntil) || aluno.premiumUntil || null;
+          }
+        }
+      } catch (e) {
+        console.warn("⚠️ anti-downgrade get falhou (continuando):", e?.message || e);
+      }
+    }
 
     const normalize = (val) => safeToDate(val);
 
@@ -762,29 +757,63 @@ async function loadStudentFromFirestore(phone) {
   }
 }
 
-/** fallback: se memória incompleta, recarrega do Firestore */
+/**
+ * ✅ FIX PRINCIPAL:
+ * - Antes: só recarregava do Firestore se “incompleto”.
+ * - Agora: SEMPRE tenta reconciliação (plan/premiumUntil), para permitir unlock manual e não ser sobrescrito.
+ */
 async function ensureStudentLoaded(numeroAluno) {
-  let aluno = students[numeroAluno];
+  let aluno = students[numeroAluno] || null;
 
-  const incompleto =
-    aluno &&
-    (!aluno.stage ||
-      (aluno.stage !== "ask_name" && !aluno.nome) ||
-      (aluno.stage !== "ask_name" && aluno.stage !== "ask_language" && !aluno.idioma));
+  const fromDb = await loadStudentFromFirestore(numeroAluno);
 
-  if (!aluno || incompleto) {
-    const fromDb = await loadStudentFromFirestore(numeroAluno);
-    if (fromDb) {
-      aluno = {
-        ...(aluno || {}),
-        ...fromDb,
-        history: aluno?.history || [],
-      };
-      students[numeroAluno] = aluno;
-    }
+  // Se não tinha em memória, mas existe no Firestore
+  if (!aluno && fromDb) {
+    aluno = { ...fromDb, history: [] };
+    students[numeroAluno] = aluno;
+    return aluno;
   }
 
-  return aluno || null;
+  // Se existe em memória e existe no Firestore: reconcilia
+  if (aluno && fromDb) {
+    const now = new Date();
+
+    // 🔥 Se Firestore diz premium ativo, força memória para premium
+    if (isPremiumActiveFromData(fromDb, now)) {
+      aluno.plan = "premium";
+      aluno.paymentProvider = fromDb.paymentProvider || aluno.paymentProvider || "manual";
+      aluno.premiumUntil = safeToDate(fromDb.premiumUntil) || aluno.premiumUntil || null;
+    } else {
+      // Firestore não premium: só derruba memória se memória também não está premium ativo
+      const memPremiumActive = isPremium(aluno, now);
+      if (!memPremiumActive) {
+        aluno.plan = fromDb.plan || aluno.plan || "free";
+        aluno.paymentProvider = fromDb.paymentProvider ?? aluno.paymentProvider ?? null;
+        aluno.premiumUntil = safeToDate(fromDb.premiumUntil) ?? aluno.premiumUntil ?? null;
+      }
+    }
+
+    // Completa campos base sem destruir o que já existe
+    aluno.stage = aluno.stage || fromDb.stage || "ask_name";
+    aluno.nome = aluno.nome || fromDb.nome || null;
+    aluno.idioma = aluno.idioma || fromDb.idioma || null;
+
+    // Se memory não tem timestamps/flags, puxa do Firestore
+    aluno.lastSalesMessageAt = aluno.lastSalesMessageAt || fromDb.lastSalesMessageAt || null;
+    aluno.lastPremiumExpiredNoticeAt =
+      aluno.lastPremiumExpiredNoticeAt || fromDb.lastPremiumExpiredNoticeAt || null;
+
+    aluno.followup1hAt = aluno.followup1hAt || fromDb.followup1hAt || null;
+    aluno.followup2dAt = aluno.followup2dAt || fromDb.followup2dAt || null;
+    aluno.followup1hSentAt = aluno.followup1hSentAt || fromDb.followup1hSentAt || null;
+    aluno.followup2dSentAt = aluno.followup2dSentAt || fromDb.followup2dSentAt || null;
+
+    students[numeroAluno] = aluno;
+    return aluno;
+  }
+
+  // Se só existe em memória
+  return aluno;
 }
 
 /** ---------- OpenAI ---------- **/
@@ -888,7 +917,7 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
-/** ---------- ÁUDIO (TTS) – Premium only (quando aluno pede Kito enviar áudio) ---------- **/
+/** ---------- ÁUDIO (TTS) – Premium only (quando aluno pede KITO enviar áudio) ---------- **/
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
     const clean = String(texto || "").trim();
@@ -987,7 +1016,6 @@ function scheduleFollowups(aluno, agora = new Date()) {
   // Só faz sentido para Premium (quem tem acesso)
   aluno.followup1hAt = new Date(agora.getTime() + FOLLOWUP_1H_MINUTES * 60 * 1000);
   aluno.followup2dAt = new Date(agora.getTime() + FOLLOWUP_2D_HOURS * 60 * 60 * 1000);
-  // não zera sentAt se já existia, para evitar repetir em loop
 }
 
 function shouldSendFollowup1h(aluno, agora = new Date()) {
@@ -1019,7 +1047,7 @@ function shouldSendFollowup2d(aluno, agora = new Date()) {
 async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
   const agora = new Date();
 
-  // ✅ garante aluno carregado
+  // ✅ garante aluno carregado + reconciliação de premium (FIX)
   let aluno = await ensureStudentLoaded(numeroAluno);
 
   const textoNormQuick = normalizarTexto(texto || "");
@@ -1143,8 +1171,6 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
 
   // pedido de áudio (Kito enviar áudio)
   const pediuKitoAudio = alunoPediuKitoEnviarAudio(texto || "");
-
-  // Se o aluno pediu áudio (premium ok), segue fluxo normal
 
   // histórico user
   aluno.history.push({ role: "user", content: String(texto || "") });
@@ -1502,7 +1528,6 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
           students[phone].paymentProvider = "stripe";
           students[phone].premiumUntil = premiumUntil;
         } else {
-          // cria cache mínimo
           students[phone] = {
             plan: "premium",
             paymentProvider: "stripe",

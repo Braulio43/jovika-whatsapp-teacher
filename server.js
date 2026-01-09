@@ -88,6 +88,11 @@ const STRIPE_PAYMENT_LINK_URL = String(
 const PREMIUM_PRICE_EUR = String(process.env.PREMIUM_PRICE_EUR || "9,99€").trim();
 const PREMIUM_PERIOD_TEXT = String(process.env.PREMIUM_PERIOD_TEXT || "mês").trim();
 
+// ✅ HOTMART (Brasil + Angola)
+const HOTMART_PAYMENT_LINK_URL = String(
+  process.env.HOTMART_PAYMENT_LINK_URL || "https://pay.hotmart.com/X103770007F"
+).trim();
+
 // Controle de memória
 const MAX_HISTORY_MESSAGES = Number(process.env.MAX_HISTORY_MESSAGES || 24);
 const MAX_PROCESSED_IDS = Number(process.env.MAX_PROCESSED_IDS || 5000);
@@ -192,16 +197,43 @@ function trimHistory(aluno) {
   }
 }
 
+/** ---------- ✅ SELETOR DE LINK POR PAÍS (Brasil/Angola = Hotmart; Europa/outros = Stripe) ---------- **/
+function phoneDigits(phone) {
+  return String(phone || "").replace(/\D/g, ""); // no teu webhook já vem só dígitos
+}
+
+function isAngolaOrBrazilPhone(phone) {
+  const d = phoneDigits(phone);
+  // Angola +244 => começa 244; Brasil +55 => começa 55
+  return d.startsWith("244") || d.startsWith("55");
+}
+
 /** Stripe link (GLOBAL) */
 function gerarStripeLinkParaTelefone(phone) {
-  const ref = `whatsapp:${String(phone || "").replace(/\D/g, "")}`;
+  const ref = `whatsapp:${phoneDigits(phone)}`;
   const glue = STRIPE_PAYMENT_LINK_URL.includes("?") ? "&" : "?";
   return `${STRIPE_PAYMENT_LINK_URL}${glue}client_reference_id=${encodeURIComponent(ref)}`;
 }
 
+/** Hotmart link (fixo) */
+function gerarHotmartLinkParaTelefone() {
+  // aqui fica fixo porque a Hotmart já trata PIX/checkout
+  return HOTMART_PAYMENT_LINK_URL;
+}
+
+/** Decide provedor + link */
+function getPaymentLinkForPhone(phone) {
+  if (isAngolaOrBrazilPhone(phone)) {
+    return { provider: "hotmart", link: gerarHotmartLinkParaTelefone(phone) };
+  }
+  return { provider: "stripe", link: gerarStripeLinkParaTelefone(phone) };
+}
+
 /** ---------- Mensagem ÚNICA para não-Premium (HARD PAYWALL) ---------- **/
 function montarMensagemHardPaywall(phone) {
-  const link = gerarStripeLinkParaTelefone(phone);
+  const { provider, link } = getPaymentLinkForPhone(phone);
+  const canal = provider === "hotmart" ? "Hotmart (PIX/cartão)" : "Stripe (cartão)";
+
   return [
     `Olá! 😊 Eu sou o *Kito*, professor de inglês e francês da *Jovika Academy*.`,
     ``,
@@ -215,7 +247,7 @@ function montarMensagemHardPaywall(phone) {
     `💰 *Acesso Premium: ${PREMIUM_PRICE_EUR}/${PREMIUM_PERIOD_TEXT}*`,
     `Sem fidelização. Cancele quando quiser.`,
     ``,
-    `👉 *Ativar agora (Stripe):*`,
+    `👉 *Ativar agora (${canal}):*`,
     `${link}`,
     ``,
     `Assim que o pagamento confirmar, eu libero automaticamente ✅`,
@@ -234,6 +266,8 @@ function isSalesIntent(texto = "") {
     "assinar",
     "ativar",
     "stripe",
+    "hotmart",
+    "pix",
     "quanto custa",
     "como pagar",
     "quero pagar",
@@ -258,7 +292,8 @@ function canSendPremiumExpiredNotice(aluno, now = new Date()) {
 
 /** Mensagens Premium (mantidas) */
 function montarMensagemPremiumPorAudio(phone) {
-  const link = gerarStripeLinkParaTelefone(phone);
+  const { provider, link } = getPaymentLinkForPhone(phone);
+  const canal = provider === "hotmart" ? "Hotmart (PIX/cartão)" : "Stripe (cartão)";
 
   return [
     `🔒 Áudios são exclusivos do *Acesso Premium*.`,
@@ -268,13 +303,15 @@ function montarMensagemPremiumPorAudio(phone) {
     `✅ Áudios para pronúncia (quando você pedir)`,
     `✅ Plano guiado + progresso (A0 → B1)`,
     ``,
-    `👉 *Ativar Premium (Stripe):*`,
+    `👉 *Ativar Premium (${canal}):*`,
     `${link}`,
   ].join("\n");
 }
 
 function montarMensagemPremiumExpirou(phone) {
-  const link = gerarStripeLinkParaTelefone(phone);
+  const { provider, link } = getPaymentLinkForPhone(phone);
+  const canal = provider === "hotmart" ? "Hotmart (PIX/cartão)" : "Stripe (cartão)";
+
   return [
     `Oi 😊 Eu consigo te ajudar sim.`,
     ``,
@@ -282,7 +319,8 @@ function montarMensagemPremiumExpirou(phone) {
     `Reative para voltar a ter aulas, conversa completa e áudios.`,
     ``,
     `💰 *${PREMIUM_PRICE_EUR}/${PREMIUM_PERIOD_TEXT}*`,
-    `👉 ${link}`,
+    `👉 *Reativar (${canal}):*`,
+    `${link}`,
   ].join("\n");
 }
 
@@ -435,7 +473,9 @@ function detectarTipoMensagem(textoNorm = "") {
     textoNorm.includes("quero pagar") ||
     textoNorm.includes("quero assinar") ||
     textoNorm.includes("manda link") ||
-    textoNorm.includes("link stripe")
+    textoNorm.includes("link stripe") ||
+    textoNorm.includes("hotmart") ||
+    textoNorm.includes("pix")
   )
     return "pedido_premium";
 
@@ -610,11 +650,13 @@ function montarResultadoDiagnostico(aluno) {
 }
 
 function montarMensagemPrecoNoFim(phone) {
-  const link = gerarStripeLinkParaTelefone(phone);
+  const { provider, link } = getPaymentLinkForPhone(phone);
+  const canal = provider === "hotmart" ? "Hotmart (PIX/cartão)" : "Stripe (cartão)";
+
   return [
     `💰 Para liberar o *plano completo + acompanhamento + áudios*, o Premium custa *${PREMIUM_PRICE_EUR}/${PREMIUM_PERIOD_TEXT}*.`,
     ``,
-    `👉 Link (Stripe):`,
+    `👉 Link (${canal}):`,
     `${link}`,
   ].join("\n");
 }

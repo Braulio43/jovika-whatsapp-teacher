@@ -12,6 +12,15 @@
 // ✅ FIX CRÍTICO: Firestore não pode voltar premium->free por causa da memória do server
 //    - ensureStudentLoaded() agora SEMPRE reconcilia plan/premiumUntil com Firestore
 //    - saveStudentToFirestore() tem anti-downgrade (se Firestore está premium ativo, não sobrescreve)
+//
+// ✅ FIX ÁUDIO (Premium):
+//    - áudio é enviado SOMENTE do trecho (palavra/frase) que o aluno pedir
+//    - Z-API normalmente quer base64 PURO (sem "data:audio/..;base64,")
+//    - se aluno pedir áudio sem informar a palavra/frase, Kito pede a frase e NÃO manda áudio “errado”
+//
+// ✅ FIX NOME:
+//    - extrairNome agora entende "chamo-me Luis", "me chamo Luis", "eu sou Luis", etc.
+//    - não grava/guarda "chamo-me" como nome
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -28,7 +37,7 @@ import { randomUUID } from "node:crypto";
 dotenv.config();
 
 console.log(
-  "🔥 KITO v7.0 – HARD PAYWALL (só premium) + Anti-spam + Manual unlock + Expiração + Follow-ups (cron) + FIX anti-downgrade 🔥"
+  "🔥 KITO v7.1 – ÁUDIO POR TRECHO (Premium) + FIX extrairNome + FIX base64 puro no send-audio 🔥"
 );
 
 const app = express();
@@ -97,6 +106,10 @@ const HOTMART_PAYMENT_LINK_URL = String(
 const MAX_HISTORY_MESSAGES = Number(process.env.MAX_HISTORY_MESSAGES || 24);
 const MAX_PROCESSED_IDS = Number(process.env.MAX_PROCESSED_IDS || 5000);
 
+// Áudio: limites e comportamento
+const AUDIO_MAX_CHARS = Number(process.env.AUDIO_MAX_CHARS || 180); // só palavra/frase curta
+const AUDIO_REQUIRE_EXPLICIT_TEXT = String(process.env.AUDIO_REQUIRE_EXPLICIT_TEXT || "1") === "1"; // 1 = só manda áudio se a frase estiver no pedido
+
 /** ---------- memória ---------- **/
 const students = {};
 const processedMessages = new Set();
@@ -122,11 +135,60 @@ function normalizarTexto(txt = "") {
   return String(txt).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
+/**
+ * ✅ FIX extrairNome:
+ * entende "chamo-me Luis", "me chamo Luis", "eu sou Luis", "sou o Luis", etc.
+ * evita retornar "chamo-me" / "sou" como nome.
+ */
 function extrairNome(frase) {
   if (!frase) return null;
-  const partes = String(frase).trim().split(/\s+/);
-  if (!partes.length) return null;
-  return partes[0].replace(/[^\p{L}]/gu, "");
+  const raw = String(frase).trim();
+  if (!raw) return null;
+
+  // remove pontuação “pesada”, mantém letras e hífen
+  const cleaned = raw.replace(/[.,!?;:()[\]{}"]/g, " ").replace(/\s+/g, " ").trim();
+
+  const lower = normalizarTexto(cleaned);
+
+  const patterns = [
+    // PT
+    { re: /\bchamo[- ]me\s+([^\s]+)/i, group: 1 },
+    { re: /\bme\s+chamo\s+([^\s]+)/i, group: 1 },
+    { re: /\beu\s+sou\s+([^\s]+)/i, group: 1 },
+    { re: /\bsou\s+o\s+([^\s]+)/i, group: 1 },
+    { re: /\bsou\s+a\s+([^\s]+)/i, group: 1 },
+    { re: /\bsou\s+([^\s]+)/i, group: 1 },
+    { re: /\bmeu\s+nome\s+e\s+([^\s]+)/i, group: 1 },
+    { re: /\bnome\s+e\s+([^\s]+)/i, group: 1 },
+    // EN
+    { re: /\bmy\s+name\s+is\s+([^\s]+)/i, group: 1 },
+    { re: /\bi\s*'?m\s+([^\s]+)/i, group: 1 },
+    { re: /\bi\s+am\s+([^\s]+)/i, group: 1 },
+  ];
+
+  for (const p of patterns) {
+    const m = cleaned.match(p.re);
+    if (m && m[p.group]) {
+      const candidate = String(m[p.group]).replace(/[^\p{L}\-]/gu, "");
+      if (candidate && candidate.length >= 2) return candidate;
+    }
+  }
+
+  // fallback: pega o PRIMEIRO token que pareça nome (não “chamo-me/sou/me/eu”)
+  const tokens = cleaned.split(/\s+/).map((t) => t.replace(/[^\p{L}\-]/gu, ""));
+  const stop = new Set([
+    "eu", "me", "chamo", "chamo-me", "sou", "o", "a", "nome", "meu", "minha", "e", "é", "se", "chama",
+  ]);
+
+  for (const tok of tokens) {
+    const tnorm = normalizarTexto(tok);
+    if (!tok) continue;
+    if (stop.has(tnorm)) continue;
+    if (tok.length < 2) continue;
+    return tok;
+  }
+
+  return null;
 }
 
 function detectarIdioma(frase) {
@@ -349,25 +411,61 @@ function updateDailyCounter(aluno, now = new Date()) {
 }
 
 /**
- * “Aluno mandou áudio” (isAudio=true) NÃO é “aluno pediu KITO enviar áudio”.
+ * ✅ Pedido de áudio:
+ * - Detecta se o aluno pediu áudio
+ * - Extrai a palavra/frase desejada (se existir)
  */
-function alunoPediuKitoEnviarAudio(texto = "") {
-  const t = normalizarTexto(texto || "");
-  const gatilhos = [
-    "manda audio",
-    "manda áudio",
-    "envia audio",
-    "envia áudio",
-    "responde em audio",
-    "responde em áudio",
-    "pode enviar audio",
-    "pode enviar áudio",
-    "envia por audio",
-    "envia por áudio",
-    "me manda em audio",
-    "me manda em áudio",
+function parseAudioRequest(texto = "") {
+  const raw = String(texto || "").trim();
+  if (!raw) return { asked: false, requestedText: null };
+
+  const t = normalizarTexto(raw);
+
+  const asked =
+    t.includes("audio") ||
+    t.includes("áudio") ||
+    t.includes("voz") ||
+    t.includes("voice") ||
+    t.includes("pronuncia") ||
+    t.includes("pronúncia") ||
+    t.includes("fala isso") ||
+    t.includes("falar isso");
+
+  if (!asked) return { asked: false, requestedText: null };
+
+  // Tentativas de extrair o trecho:
+  // Exemplos:
+  // "manda áudio: bonjour"
+  // "audio: hello my name is..."
+  // "manda audio da palavra bonjour"
+  // "envia audio de 'bonjour'"
+  // "pronúncia de bonjour"
+  const patterns = [
+    /(?:audio|áudio|voz|voice)\s*[:\-]\s*(.+)$/i,
+    /(?:manda|envia|me\s+manda|pode\s+enviar|consegue\s+enviar|faz)\s+(?:um\s+)?(?:audio|áudio|voz)\s*(?:da|de|do|pra|para)?\s*(?:palavra|frase)?\s*[:\-]?\s*(.+)$/i,
+    /(?:pronuncia|pronúncia)\s*(?:da|de|do)?\s*(?:palavra|frase)?\s*[:\-]?\s*(.+)$/i,
+    /(?:fala|falar)\s*(?:isso|esta|essa|esta\s+frase|essa\s+frase)?\s*(?:em)?\s*(?:audio|áudio|voz)\s*[:\-]?\s*(.+)$/i,
   ];
-  return gatilhos.some((p) => t.includes(p));
+
+  let extracted = null;
+  for (const re of patterns) {
+    const m = raw.match(re);
+    if (m && m[1]) {
+      extracted = String(m[1]).trim();
+      break;
+    }
+  }
+
+  if (extracted) {
+    // remove aspas externas comuns
+    extracted = extracted.replace(/^[“"'\s]+/, "").replace(/[”"'\s]+$/, "").trim();
+    // não deixa enviar um texto enorme
+    if (extracted.length > AUDIO_MAX_CHARS) extracted = extracted.slice(0, AUDIO_MAX_CHARS);
+    // se ficou vazio, considera null
+    if (!extracted) extracted = null;
+  }
+
+  return { asked: true, requestedText: extracted };
 }
 
 /** modos */
@@ -896,6 +994,11 @@ REGRAS CRÍTICAS (anti-robot):
 - Se o aluno fizer pergunta normal (ex: "qual é o seu nome?"), responda como humano.
 - Se tipo="pergunta_sobre_kito": responda direto (sem lição, sem tradução).
 
+IMPORTANTE SOBRE ÁUDIO:
+- Se o aluno pedir áudio, você responde em texto normalmente.
+- O áudio será enviado separadamente pelo sistema (não diga que enviou se não tiver certeza).
+- Não inclua "chamo-me" como nome do aluno.
+
 MODO DO ALUNO:
 - chatMode: "${modo}"
 - Se chatMode="conversa": responda natural, como um humano. No final pergunte se quer correção.
@@ -959,11 +1062,26 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
-/** ---------- ÁUDIO (TTS) – Premium only (quando aluno pede KITO enviar áudio) ---------- **/
+/** ---------- ÁUDIO (TTS) – Premium only (quando aluno pede) ---------- **/
+function stripDataUriBase64(maybeDataUri = "") {
+  const s = String(maybeDataUri || "").trim();
+  if (!s) return "";
+  const idx = s.indexOf("base64,");
+  if (idx !== -1) return s.slice(idx + "base64,".length).trim();
+  return s;
+}
+
+/**
+ * ✅ Gera base64 PURO (sem data:audio...)
+ * e limita para palavra/frase curta.
+ */
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
-    const clean = String(texto || "").trim();
+    let clean = String(texto || "").trim();
     if (!clean) return null;
+
+    // garante que seja “palavra/frase” (curto)
+    if (clean.length > AUDIO_MAX_CHARS) clean = clean.slice(0, AUDIO_MAX_CHARS);
 
     const instructions =
       idiomaAlvo === "ingles"
@@ -972,7 +1090,6 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
         ? "Parle en français standard de France, voix masculine naturelle, lent et très clair pour débutants."
         : "Speak clearly and naturally.";
 
-    // ✅ TTS resiliente: se falhar com voice do ENV, tenta fallback
     const voicePrimary = process.env.OPENAI_TTS_VOICE || "onyx";
     const voiceFallback = process.env.OPENAI_TTS_VOICE_FALLBACK || "alloy";
 
@@ -995,7 +1112,7 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
 
     const buffer = Buffer.from(await speech.arrayBuffer());
     const base64 = buffer.toString("base64");
-    return `data:audio/mpeg;base64,${base64}`;
+    return base64; // ✅ PURO
   } catch (err) {
     console.error("❌ Erro ao gerar áudio de resposta:", err.response?.data || err.message);
     return null;
@@ -1013,12 +1130,21 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     if (!instanceId || !instanceToken) return;
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
-    const payload = { phone, audio: audioBase64, viewOnce: false, waveform: true };
+
+    // ✅ garante base64 puro
+    const pure = stripDataUriBase64(audioBase64);
+    if (!pure) return;
+
+    const payload = { phone, audio: pure, viewOnce: false, waveform: true };
 
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
 
-    await axios.post(url, payload, { headers });
+    const resp = await axios.post(url, payload, { headers });
+    // log leve para debug
+    if (process.env.DEBUG_AUDIO === "1") {
+      console.log("🎧 send-audio OK:", resp?.data ? JSON.stringify(resp.data).slice(0, 300) : "ok");
+    }
   } catch (err) {
     console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
   }
@@ -1211,12 +1337,25 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   // contador diário (mantido)
   updateDailyCounter(aluno, agora);
 
-  // pedido de áudio (Kito enviar áudio)
-  const pediuKitoAudio = alunoPediuKitoEnviarAudio(texto || "");
+  // ✅ detectar pedido de áudio e extrair trecho
+  const audioReq = parseAudioRequest(texto || "");
+  const pediuAudio = audioReq.asked;
+  const trechoAudio = audioReq.requestedText;
 
   // histórico user
   aluno.history.push({ role: "user", content: String(texto || "") });
   trimHistory(aluno);
+
+  // ✅ Se pediu áudio mas NÃO informou a palavra/frase: pede explicitamente e NÃO chama OpenAI
+  if (pediuAudio && AUDIO_REQUIRE_EXPLICIT_TEXT && !trechoAudio) {
+    const msg =
+      "Claro ✅\nMe envie a *palavra ou frase* que você quer em áudio.\nExemplo: *áudio: bonjour*";
+    aluno.history.push({ role: "assistant", content: msg });
+    trimHistory(aluno);
+    await enviarMensagemWhatsApp(numeroAluno, msg);
+    await saveStudentToFirestore(numeroAluno, aluno);
+    return;
+  }
 
   // aluno pede premium (já é premium, então só responde normal, sem venda)
   if (tipoQuick === "pedido_premium") {
@@ -1500,13 +1639,12 @@ async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio
   aluno.history.push({ role: "assistant", content: respostaKito });
   trimHistory(aluno);
 
-  // ÁUDIO (TTS) só se pediu
-  const deveMandarAudio = pediuKitoAudio;
+  // ✅ ÁUDIO (TTS) só se pediu e com trecho explícito
   const idiomaAudioAlvo =
     aluno.idioma === "ingles" || aluno.idioma === "frances" ? aluno.idioma : null;
 
-  if (deveMandarAudio) {
-    const audioBase64 = await gerarAudioRespostaKito(respostaKito, idiomaAudioAlvo);
+  if (pediuAudio && trechoAudio) {
+    const audioBase64 = await gerarAudioRespostaKito(trechoAudio, idiomaAudioAlvo);
     await enviarAudioWhatsApp(numeroAluno, audioBase64);
   }
 

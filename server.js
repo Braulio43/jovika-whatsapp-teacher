@@ -1127,26 +1127,61 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
-    if (!instanceId || !instanceToken) return;
+    if (!instanceId || !instanceToken) {
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN");
+      return;
+    }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
 
-    // ✅ garante base64 puro
-    const pure = stripDataUriBase64(audioBase64);
-    if (!pure) return;
+    // ✅ base64 "puro" sem prefixo e sem espaços/linhas
+    const pure = String(audioBase64)
+      .trim()
+      .replace(/^data:audio\/\w+;base64,/, "")
+      .replace(/\s+/g, "");
 
-    const payload = { phone, audio: pure, viewOnce: false, waveform: true };
+    if (!pure) {
+      console.error("❌ Áudio base64 vazio após limpeza");
+      return;
+    }
+
+    // debug útil
+    console.log("🎧 AUDIO_BASE64_LEN:", pure.length);
 
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
 
-    const resp = await axios.post(url, payload, { headers });
-    // log leve para debug
-    if (process.env.DEBUG_AUDIO === "1") {
-      console.log("🎧 send-audio OK:", resp?.data ? JSON.stringify(resp.data).slice(0, 300) : "ok");
+    // ✅ tenta formatos diferentes (Z-API varia)
+    const attempts = [
+      { phone, audio: pure }, // formato 1 (o teu)
+      { phone, audioBase64: pure }, // formato 2
+      { phone, base64: pure }, // formato 3
+      { phone, audio: `data:audio/mpeg;base64,${pure}` }, // formato 4 (data uri)
+    ];
+
+    let lastErr = null;
+
+    for (let i = 0; i < attempts.length; i++) {
+      try {
+        const resp = await axios.post(url, attempts[i], { headers });
+        console.log("✅ send-audio OK (attempt", i + 1, "):", resp?.data || "ok");
+        return; // sucesso
+      } catch (e) {
+        lastErr = e;
+        console.warn(
+          "⚠️ send-audio falhou (attempt",
+          i + 1,
+          "):",
+          e?.response?.status,
+          e?.response?.data || e?.message
+        );
+      }
     }
+
+    // se todas falharam
+    console.error("❌ Erro ao enviar áudio via Z-API (todas tentativas):", lastErr?.response?.data || lastErr?.message);
   } catch (err) {
-    console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
+    console.error("❌ Erro inesperado no enviarAudioWhatsApp:", err?.response?.data || err.message);
   }
 }
 

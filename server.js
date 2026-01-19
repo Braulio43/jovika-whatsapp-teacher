@@ -4,7 +4,9 @@
 // ✅ Reduzir drasticamente o código (mantém só o essencial)
 // ✅ Proteger partes críticas: Paywall Premium, Firestore, Stripe webhook, Hotmart/Stripe link por país
 // ✅ Aula guiada (A0) com estado “awaitingRepeat” (só avança quando o aluno envia a frase)
-// ✅ Áudio (TTS) só Premium e só quando o aluno pedir com a frase explícita
+// ✅ Áudio (TTS) só Premium:
+//    - Pronúncia: pede frase explícita (ex: "áudio: bonjour")
+//    - Explicação: permite "explica em áudio ..." mesmo sem "áudio: ..."
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -52,7 +54,8 @@ const PREMIUM_EXPIRED_NOTICE_COOLDOWN_HOURS = Number(
 const MAX_PROCESSED_IDS = Number(process.env.MAX_PROCESSED_IDS || 6000);
 
 // Áudio
-const AUDIO_MAX_CHARS = Number(process.env.AUDIO_MAX_CHARS || 180);
+const AUDIO_MAX_CHARS = Number(process.env.AUDIO_MAX_CHARS || 180); // pronúncia curta
+const AUDIO_EXPLANATION_MAX_CHARS = Number(process.env.AUDIO_EXPLANATION_MAX_CHARS || 520); // explicação curta (mais longa que 180)
 const AUDIO_REQUIRE_EXPLICIT_TEXT = String(process.env.AUDIO_REQUIRE_EXPLICIT_TEXT || "1") === "1";
 
 // OpenAI
@@ -204,14 +207,33 @@ function getLangKey(aluno) {
   return "ingles";
 }
 
-function getCurrentLesson(aluno) {
+function getLessonList(aluno) {
   const lang = getLangKey(aluno);
+  return LESSONS[lang] || LESSONS.ingles;
+}
+
+function clampLessonIndex(aluno) {
+  const list = getLessonList(aluno);
+  const maxIdx = Math.max(0, list.length - 1);
   const idx = Number(aluno.lessonIndex || 0);
-  const list = LESSONS[lang] || LESSONS.ingles;
-  return list[Math.min(idx, list.length - 1)];
+  aluno.lessonIndex = Math.min(Math.max(0, idx), maxIdx);
+}
+
+function getCurrentLesson(aluno) {
+  clampLessonIndex(aluno);
+  const list = getLessonList(aluno);
+  return list[Number(aluno.lessonIndex || 0)];
+}
+
+function clampPartIndex(aluno) {
+  const lesson = getCurrentLesson(aluno);
+  const maxPart = Math.max(0, lesson.parts.length - 1);
+  const p = Number(aluno.partIndex || 0);
+  aluno.partIndex = Math.min(Math.max(0, p), maxPart);
 }
 
 function getCurrentPart(aluno) {
+  clampLessonIndex(aluno);
   const lesson = getCurrentLesson(aluno);
   const partIdx = Number(aluno.partIndex || 0);
   return lesson.parts[Math.min(partIdx, lesson.parts.length - 1)];
@@ -223,10 +245,12 @@ function advancePart(aluno) {
   if (partIdx >= lesson.parts.length) {
     // terminou a lição -> próxima lição (se existir) e reinicia partes
     aluno.lessonIndex = Number(aluno.lessonIndex || 0) + 1;
+    clampLessonIndex(aluno); // ✅ evita passar do fim
     aluno.partIndex = 0;
   } else {
     aluno.partIndex = partIdx;
   }
+  clampPartIndex(aluno);
 }
 
 function similarityScore(expected, user) {
@@ -539,6 +563,7 @@ function parseAudioRequest(texto = "") {
 
   if (extracted) {
     extracted = extracted.replace(/^[“"'\s]+/, "").replace(/[”"'\s]+$/, "").trim();
+    // (pronúncia) limita duro
     if (extracted.length > AUDIO_MAX_CHARS) extracted = extracted.slice(0, AUDIO_MAX_CHARS);
     if (!extracted) extracted = null;
   }
@@ -546,11 +571,53 @@ function parseAudioRequest(texto = "") {
   return { asked: true, requestedText: extracted };
 }
 
-async function gerarAudioRespostaKito(texto, idiomaAlvo = "ingles") {
+function isAudioExplanationRequest(texto = "") {
+  const t = normalizarTexto(texto);
+  // “explica em áudio”, “me explicando”, “explicação em áudio”, etc.
+  return (
+    t.includes("explica") ||
+    t.includes("explicando") ||
+    t.includes("explicacao") ||
+    t.includes("explicação") ||
+    t.includes("me explique") ||
+    t.includes("me explica")
+  );
+}
+
+async function gerarExplicacaoCurtaParaAudio(aluno, pedido) {
+  // gera um texto curto (<= AUDIO_EXPLANATION_MAX_CHARS) para virar áudio
+  const idioma = aluno.idioma === "frances" ? "francês" : "inglês";
+
+  const system = `
+Tu és o Kito, professor da Jovika Academy.
+Gera UMA explicação curta para virar áudio (WhatsApp), sem enrolar.
+
+REGRAS:
+- Máximo de ~${AUDIO_EXPLANATION_MAX_CHARS} caracteres.
+- Estrutura: 1) frase principal 2) variação opcional 3) dica rápida de pronúncia.
+- Não inclua links. Não inclua listas longas.
+- Idioma alvo do aluno: ${idioma}.
+`.trim();
+
+  const input = [
+    { role: "system", content: system },
+    { role: "user", content: pedido },
+  ];
+
+  const r = await openai.responses.create({ model: OPENAI_CHAT_MODEL, input });
+  const text = r.output?.[0]?.content?.[0]?.text || "";
+  let out = String(text).replace(/\s+/g, " ").trim();
+
+  if (!out) out = "Me diga a frase que você quer aprender e eu explico de um jeito bem simples.";
+  if (out.length > AUDIO_EXPLANATION_MAX_CHARS) out = out.slice(0, AUDIO_EXPLANATION_MAX_CHARS);
+  return out;
+}
+
+async function gerarAudioRespostaKito(texto, idiomaAlvo = "ingles", maxChars = AUDIO_MAX_CHARS) {
   try {
     let clean = String(texto || "").trim();
     if (!clean) return null;
-    if (clean.length > AUDIO_MAX_CHARS) clean = clean.slice(0, AUDIO_MAX_CHARS);
+    if (clean.length > maxChars) clean = clean.slice(0, maxChars);
 
     const instructions =
       idiomaAlvo === "frances"
@@ -583,7 +650,7 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = "ingles") {
 
 async function enviarAudioWhatsApp(phone, audioBase64) {
   try {
-    if (!audioBase64) return;
+    if (!audioBase64) return false;
 
     const instanceId = process.env.ZAPI_INSTANCE_ID;
     const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
@@ -591,14 +658,14 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
 
     if (!instanceId || !instanceToken) {
       console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN");
-      return;
+      return false;
     }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
 
     // base64 puro
     const pure = String(audioBase64).trim().replace(/^data:audio\/\w+;base64,/, "").replace(/\s+/g, "");
-    if (!pure) return;
+    if (!pure) return false;
 
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
@@ -614,14 +681,16 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     for (let i = 0; i < attempts.length; i++) {
       try {
         await axios.post(url, attempts[i], { headers });
-        return;
+        return true;
       } catch (e) {
         lastErr = e;
       }
     }
     console.error("❌ send-audio falhou:", lastErr?.response?.data || lastErr?.message);
+    return false;
   } catch (e) {
     console.error("❌ enviarAudioWhatsApp error:", e?.response?.data || e?.message || e);
+    return false;
   }
 }
 
@@ -732,7 +801,10 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
   /** --- HARD PAYWALL --- **/
   if (HARD_PAYWALL && !premium) {
     // aviso de expiração 1x/24h (se aplicável)
-    if (premiumExpired && canSendAgain(aluno.lastPremiumExpiredNoticeAt, PREMIUM_EXPIRED_NOTICE_COOLDOWN_HOURS, agora)) {
+    if (
+      premiumExpired &&
+      canSendAgain(aluno.lastPremiumExpiredNoticeAt, PREMIUM_EXPIRED_NOTICE_COOLDOWN_HOURS, agora)
+    ) {
       aluno.lastPremiumExpiredNoticeAt = agora;
       const msg = montarMensagemPremiumExpirou(phone);
       await enviarMensagemWhatsApp(phone, msg);
@@ -776,10 +848,7 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
 
     aluno.nome = extrairNome(textRaw) || "Aluno";
     aluno.stage = "ask_language";
-    await enviarMensagemWhatsApp(
-      phone,
-      `Perfeito, ${aluno.nome}! 😊\nVocê quer começar por *inglês* ou *francês*?`
-    );
+    await enviarMensagemWhatsApp(phone, `Perfeito, ${aluno.nome}! 😊\nVocê quer começar por *inglês* ou *francês*?`);
     await saveStudentToFirestore(phone, aluno);
     return;
   }
@@ -797,7 +866,10 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
     aluno.partIndex = 0;
     clearAwaitingRepeat(aluno);
 
-    const msg = `Fechado ✅ Vamos começar ${idioma === "frances" ? "francês" : "inglês"} por partes.\n\n` + montarPromptRepeticao(aluno);
+    const msg =
+      `Fechado ✅ Vamos começar ${idioma === "frances" ? "francês" : "inglês"} por partes.\n\n` +
+      montarPromptRepeticao(aluno);
+
     setAwaitingRepeat(aluno);
     await enviarMensagemWhatsApp(phone, msg);
     await saveStudentToFirestore(phone, aluno);
@@ -806,19 +878,46 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
 
   /** --- 2) Pedido de áudio (Premium) --- **/
   const audioReq = parseAudioRequest(textRaw);
+
   if (audioReq.asked) {
+    const pedidoExplicacao = isAudioExplanationRequest(textRaw);
+    const idiomaAudio = getLangKey(aluno) === "frances" ? "frances" : "ingles";
+
+    // 2A) EXPLICAÇÃO EM ÁUDIO (novo) — não exige "áudio: ..."
+    if (pedidoExplicacao && !audioReq.requestedText) {
+      const explicacao = await gerarExplicacaoCurtaParaAudio(aluno, textRaw);
+      const b64 = await gerarAudioRespostaKito(explicacao, idiomaAudio, AUDIO_EXPLANATION_MAX_CHARS);
+      const okSend = await enviarAudioWhatsApp(phone, b64);
+
+      // texto curto de professor (sem afirmar com certeza se falhou)
+      await enviarMensagemWhatsApp(
+        phone,
+        okSend
+          ? "Pronto ✅ Te mandei uma explicação em áudio. Quer praticar repetindo a frase agora?"
+          : "Tentei te enviar o áudio, mas falhou aqui 😕 Me manda: *áudio: a frase* (ex: áudio: I am tired)."
+      );
+
+      await saveStudentToFirestore(phone, aluno);
+      return;
+    }
+
+    // 2B) PRONÚNCIA (curto) — exige frase explícita
     if (AUDIO_REQUIRE_EXPLICIT_TEXT && !audioReq.requestedText) {
       await enviarMensagemWhatsApp(phone, "Claro ✅\nMe diga a *palavra ou frase*.\nExemplo: *áudio: bonjour*");
       await saveStudentToFirestore(phone, aluno);
       return;
     }
 
-    const idiomaAudio = getLangKey(aluno) === "frances" ? "frances" : "ingles";
-    const b64 = await gerarAudioRespostaKito(audioReq.requestedText, idiomaAudio);
-    await enviarAudioWhatsApp(phone, b64);
+    const b64 = await gerarAudioRespostaKito(audioReq.requestedText, idiomaAudio, AUDIO_MAX_CHARS);
+    const okSend = await enviarAudioWhatsApp(phone, b64);
 
-    // resposta texto de professor (sem dizer “enviei” com certeza absoluta)
-    await enviarMensagemWhatsApp(phone, "Perfeito ✅ Aqui vai a pronúncia. Quer que eu corrija sua repetição também?");
+    await enviarMensagemWhatsApp(
+      phone,
+      okSend
+        ? "Perfeito ✅ Aqui vai a pronúncia. Quer que eu corrija sua repetição também?"
+        : "Tentei enviar o áudio, mas falhou 😕 Me manda a frase novamente (ex: áudio: bonjour)."
+    );
+
     await saveStudentToFirestore(phone, aluno);
     return;
   }
@@ -840,8 +939,7 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
       const expected = aluno.awaitingRepeat.expected;
       const score = similarityScore(expected, textRaw);
 
-      if (score < 0.35) {
-        // não bateu o suficiente -> tenta de novo
+      if (score < 0.35_toggleScoreIfEmojiOnly(textRaw)) {
         await enviarMensagemWhatsApp(
           phone,
           `Quase 😊 Tenta mais uma vez *igualzinho*:\n“${expected}”\n\nSe preferir, manda em áudio.`
@@ -850,27 +948,18 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
         return;
       }
 
-      // ✅ sucesso -> elogia de forma pedagógica e avança
+      // ✅ sucesso -> avança com controle correto
       clearAwaitingRepeat(aluno);
       advancePart(aluno);
 
-      // Se acabou as partes da lição, recomeça com próxima (se existir)
-      const lesson = getCurrentLesson(aluno);
-      const part = getCurrentPart(aluno);
+      // recomputa a parte DEPOIS de ajustar índices
+      const nextPart = getCurrentPart(aluno);
 
-      // Se avançou para uma lição que não existe (fim), mantém última
-      const lang = getLangKey(aluno);
-      const list = LESSONS[lang] || LESSONS.ingles;
-      const maxLessonIndex = list.length - 1;
-      if (Number(aluno.lessonIndex || 0) > maxLessonIndex) aluno.lessonIndex = maxLessonIndex;
-
-      // prepara próxima repetição
       const msg = [
-        `Mandou bem ✅ (boa consistência)`,
-        ``,
+        `Boa ✅`,
         `Agora a próxima parte:`,
-        `“${part.text}”`,
-        `(${part.hint})`,
+        `“${nextPart.text}”`,
+        `(${nextPart.hint})`,
         ``,
         `Repete por texto ou áudio.`,
       ].join("\n");
@@ -899,6 +988,18 @@ async function processarMensagemAluno({ numeroAluno, texto, msgId }) {
   const resposta = await gerarRespostaProfessor(aluno, textRaw);
   await enviarMensagemWhatsApp(phone, resposta);
   await saveStudentToFirestore(phone, aluno);
+}
+
+/**
+ * Pequena proteção:
+ * - Se o aluno mandar só emoji/pontuação (pode escapar do isAckOnly)
+ * - garante que não passe no score por engano
+ */
+function _toggleScoreIfEmojiOnly(textRaw) {
+  const t = String(textRaw || "").trim();
+  const letters = t.replace(/[^\p{L}\p{N}\s]/gu, "").trim();
+  if (!letters) return 1; // força score < 0.35 sempre
+  return 0;
 }
 
 /** ------------ Stripe webhook (auto-unlock) ------------ **/
@@ -953,10 +1054,7 @@ app.post("/stripe/webhook", stripeRawParser, async (req, res) => {
           students[phone].premiumUntil = premiumUntil;
         }
 
-        await enviarMensagemWhatsApp(
-          phone,
-          `🎉 Pagamento confirmado! Seu *Acesso Premium* foi ativado.\n\nComo você quer que eu te chame?`
-        );
+        await enviarMensagemWhatsApp(phone, `🎉 Pagamento confirmado! Seu *Acesso Premium* foi ativado.\n\nComo você quer que eu te chame?`);
       }
     }
 
@@ -1045,10 +1143,7 @@ app.get("/admin/lock", async (req, res) => {
     if (!phone) return res.status(400).send("missing_phone");
     if (!db) return res.status(500).send("firestore_off");
 
-    await db.collection("students").doc(`whatsapp:${phone}`).set(
-      { plan: "free", premiumUntil: new Date(0), updatedAt: new Date() },
-      { merge: true }
-    );
+    await db.collection("students").doc(`whatsapp:${phone}`).set({ plan: "free", premiumUntil: new Date(0), updatedAt: new Date() }, { merge: true });
 
     if (students[phone]) {
       students[phone].plan = "free";

@@ -968,10 +968,25 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const instanceToken = process.env.ZAPI_INSTANCE_TOKEN;
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
-    if (!instanceId || !instanceToken) return;
+    if (!instanceId || !instanceToken) {
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN");
+      return;
+    }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-audio`;
-    const payload = { phone, audio: audioBase64, viewOnce: false, waveform: true };
+
+    // ✅ Z-API geralmente exige base64 PURO (sem prefixo data:)
+    const pure = String(audioBase64)
+      .trim()
+      .replace(/^data:audio\/\w+;base64,/, "")
+      .replace(/\s+/g, "");
+
+    if (!pure) {
+      console.error("❌ Áudio base64 vazio após limpeza");
+      return;
+    }
+
+    const payload = { phone, audio: pure, viewOnce: false, waveform: true };
 
     const headers = { "Content-Type": "application/json" };
     if (clientToken) headers["Client-Token"] = clientToken;
@@ -981,6 +996,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
   }
 }
+
 
 /** ---------- ✅ TRANSCRIÇÃO de ÁUDIO do aluno ---------- **/
 async function transcreverAudioFromUrl(audioUrl) {

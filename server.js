@@ -298,11 +298,13 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
 /** ---------- PAYWALL PREMIUM (Express) ---------- **/
 
 const EXPRESS_PAY_NUMBER = "922390075";
+const PREMIUM_PRICE_KZ = "13.000 Kz";
 
 function montarMensagemPaywallPremium() {
   return (
     `👋 Olá! Eu sou o Kito, professor de inglês e francês da Jovika Academy.\n\n` +
-    `Para usar o **Kito Premium**, é necessário ativar o acesso.\n\n` +
+    `Para usar o **Kito Premium**, é necessário ativar o acesso.\n` +
+    `💰 Valor: **${PREMIUM_PRICE_KZ} / mês**\n\n` +
     `⭐ Vantagens do Premium:\n` +
     `• 🎧 Áudios com pronúncia correta (inglês/francês)\n` +
     `• 📘 Aulas personalizadas no seu nível\n` +
@@ -763,7 +765,7 @@ async function processarMensagemAluno({
 
     // ✅ HARD PAYWALL: se não for premium, mostra no máximo 2x e bloqueia
     if (!isPremium(aluno)) {
-      const r = await aplicarPaywallSeNecessario(numeroAluno, aluno);
+      await aplicarPaywallSeNecessario(numeroAluno, aluno);
       await saveStudentToFirestore(numeroAluno, aluno);
       return;
     }
@@ -786,7 +788,7 @@ async function processarMensagemAluno({
 
   // ✅ HARD PAYWALL (antes de qualquer coisa)
   if (!isPremium(aluno)) {
-    const r = await aplicarPaywallSeNecessario(numeroAluno, aluno);
+    await aplicarPaywallSeNecessario(numeroAluno, aluno);
     students[numeroAluno] = aluno;
     await saveStudentToFirestore(numeroAluno, aluno);
     return;

@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.8 – TEXTO + ÁUDIO SOB PEDIDO (voz masculina fixa, inglês/francês limpos) 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.8.1 – FIX PREMIUM (não rebaixa) + TEXTO + ÁUDIO SOB PEDIDO 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -193,17 +193,14 @@ function limparTextoResposta(txt = "") {
   if (!txt) return "";
   let r = txt;
 
-  // remove [Áudio enviado], [audio enviado], etc.
   r = r.replace(/\[\s*áudio enviado\s*\]/gi, "");
   r = r.replace(/\[\s*audio enviado\s*\]/gi, "");
   r = r.replace(/áudio enviado/gi, "");
   r = r.replace(/audio enviado/gi, "");
 
-  // remove "(Áudio)" ou "(audio)" em qualquer parte
   r = r.replace(/\(\s*áudio\s*\)/gi, "");
   r = r.replace(/\(\s*audio\s*\)/gi, "");
 
-  // remove qualquer frase que fale "vou ... áudio" ou "mandar ... áudio" ou "enviar ... áudio"
   r = r.replace(/.*vou .*áudio.*(\r?\n)?/gi, "");
   r = r.replace(/.*vou .*audio.*(\r?\n)?/gi, "");
   r = r.replace(/.*mandar .*áudio.*(\r?\n)?/gi, "");
@@ -211,17 +208,12 @@ function limparTextoResposta(txt = "") {
   r = r.replace(/.*enviar .*áudio.*(\r?\n)?/gi, "");
   r = r.replace(/.*enviar .*audio.*(\r?\n)?/gi, "");
 
-  // remove espaços/linhas duplicadas desnecessárias
   r = r.replace(/\n{3,}/g, "\n\n").trim();
-
   return r;
 }
 
 /**
  * Extrai apenas as linhas do idioma alvo para o áudio
- * - inglês: linhas que parecem frases em inglês
- * - francês: linhas que parecem frases em francês
- * Se não encontrar nada, devolve o texto original.
  */
 function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   const linhas = texto
@@ -291,7 +283,6 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
     if (enLines.length > 0) return enLines.join("\n");
   }
 
-  // fallback: devolve tudo se não conseguir separar
   return texto;
 }
 
@@ -324,15 +315,38 @@ function isPremium(aluno) {
 }
 
 /**
+ * Refresh premium do Firestore (resolve cache em memória)
+ * - Se premium estiver false em memória, checa no Firestore.
+ * - Se no Firestore for true, atualiza o aluno em memória.
+ */
+async function refreshPremiumIfNeeded(phone, aluno) {
+  try {
+    if (!db) return aluno;
+    if (aluno?.premium === true) return aluno;
+
+    const snap = await db.collection("students").doc(`whatsapp:${phone}`).get();
+    if (!snap.exists) return aluno;
+
+    const data = snap.data();
+    if (data?.premium === true) {
+      aluno.premium = true;
+      students[phone] = aluno;
+    }
+    return aluno;
+  } catch (e) {
+    console.error("⚠️ Falha ao refresh premium:", e?.message || e);
+    return aluno;
+  }
+}
+
+/**
  * Se não for premium:
- * - mostra o paywall no máximo 2 vezes (mesma mensagem)
- * - depois disso, não repete
+ * - mostra o paywall no máximo 2 vezes
  */
 async function aplicarPaywallSeNecessario(numeroAluno, aluno) {
   const count = Number(aluno?.paywallShownCount || 0);
 
   if (count >= 2) {
-    // Máximo atingido: não repete a mensagem.
     return { blocked: true, paywallSent: false };
   }
 
@@ -371,27 +385,31 @@ async function saveStudentToFirestore(phone, aluno) {
       lastMessageAt = new Date();
     }
 
-    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
-    await docRef.set(
-      {
-        nome: aluno.nome ?? null,
-        idioma: aluno.idioma ?? null,
-        nivel: aluno.nivel ?? null,
-        stage: aluno.stage ?? null,
-        messagesCount: aluno.messagesCount ?? 0,
-        moduleIndex: aluno.moduleIndex ?? 0,
-        moduleStep: aluno.moduleStep ?? 0,
-        createdAt,
-        lastMessageAt,
-        updatedAt: new Date(),
+    // ✅ IMPORTANTE:
+    // - NÃO gravar premium=false (para não derrubar premium=true manual do Firebase)
+    // - Só gravar premium quando for true.
+    const dataToSave = {
+      nome: aluno.nome ?? null,
+      idioma: aluno.idioma ?? null,
+      nivel: aluno.nivel ?? null,
+      stage: aluno.stage ?? null,
+      messagesCount: aluno.messagesCount ?? 0,
+      moduleIndex: aluno.moduleIndex ?? 0,
+      moduleStep: aluno.moduleStep ?? 0,
+      createdAt,
+      lastMessageAt,
+      updatedAt: new Date(),
 
-        // ✅ campos Premium/Paywall (merge, sem quebrar dados existentes)
-        premium: aluno.premium === true,
-        paywallShownCount: aluno.paywallShownCount ?? 0,
-        paywallLastShownAt: aluno.paywallLastShownAt ?? null,
-      },
-      { merge: true }
-    );
+      paywallShownCount: aluno.paywallShownCount ?? 0,
+      paywallLastShownAt: aluno.paywallLastShownAt ?? null,
+    };
+
+    if (aluno.premium === true) {
+      dataToSave.premium = true;
+    }
+
+    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+    await docRef.set(dataToSave, { merge: true });
   } catch (err) {
     console.error("❌ Erro ao salvar aluno no Firestore:", err.message);
   }
@@ -403,7 +421,12 @@ async function loadStudentFromFirestore(phone) {
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     const snap = await docRef.get();
     if (!snap.exists) return null;
-    return snap.data();
+    const data = snap.data();
+
+    // normaliza premium
+    if (typeof data.premium !== "boolean") data.premium = data.premium === true;
+
+    return data;
   } catch (err) {
     console.error("❌ Erro ao carregar aluno do Firestore:", err.message);
     return null;
@@ -458,15 +481,9 @@ PORTUGUÊS DO BRASIL (IMPORTANTE):
 - Quando escrever frases em francês, faz assim:
   - primeira linha: só a frase em francês;
   - linha seguinte: tradução em português do Brasil.
-  Exemplo:
-  "Je suis fatigué."
-  "Eu estou cansado."
 - Quando escrever frases em inglês, faz assim:
   - primeira linha: só a frase em inglês;
   - linha seguinte: tradução em português do Brasil.
-  Exemplo:
-  "I am tired."
-  "Eu estou cansado."
 - Evita misturar francês/inglês e português na mesma linha.
 
 DADOS DO ALUNO:
@@ -481,54 +498,17 @@ DADOS DO ALUNO:
 
 SOBRE ÁUDIO (MUITO IMPORTANTE):
 - Tu consegues enviar áudios curtos de voz sintetizada quando o aluno pede.
-- **NUNCA** digas frases como "não consigo enviar áudio", "só consigo texto", "não tenho voz" ou "não posso ajudar com áudio".
-- **NUNCA** escrevas tags como "[Áudio enviado]" ou "[audio enviado]" nem escrevas prefixos como "(Áudio)" ou "Áudio:".
-- **NÃO** digas "vou mandar um áudio", "enviei um áudio" ou nada parecido. O sistema cuida do envio.
-- Quando o aluno pedir para ouvir algo em áudio (pronúncia, frases, explicação, diálogo, etc.):
-  1) Responde normalmente em texto (explicação + exemplos +, se fizer sentido, mini exercício).
-  2) No final da mensagem, faz **uma pergunta de preferência**, por exemplo:
-     - "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
+- **NUNCA** digas que não consegues enviar áudio.
+- **NUNCA** escrevas tags como "[Áudio enviado]" nem "Áudio:".
+- **NÃO** digas "vou mandar um áudio". O sistema cuida do envio.
+- Quando o aluno pedir áudio:
+  1) Responde normalmente em texto.
+  2) No final, pergunta: "Você prefere que eu continue também em áudio ou só por mensagem escrita?"
 
-COMO O KITO PENSA E AGE:
-- Tu lembras-te do contexto da conversa (histórico) e não repetes perguntas iniciais
-  como nome, idioma ou objetivo.
-- Tu respondes exatamente ao que o aluno diz, usando os módulos apenas como GUIA,
-  não como um script engessado.
-- Se o aluno fizer perguntas específicas ("como digo X?", "explica Y"), responde diretamente.
-- Se o aluno só disser coisas como "sim", "vamos", "quero", assume que ele quer
-  continuar para o próximo micro-passo do módulo, e tu crias esse próximo passo.
-- Se o aluno disser palavras soltas de objetivo ("trabalho", "confiança", "Canadá", "emprego"),
-  tu:
-    - NÃO ficas só a traduzir a palavra.
-    - Explicas como esse objetivo se relaciona com o idioma e o módulo.
-    - Dás um pequeno exercício ou frase relacionada a esse objetivo.
+ESTILO:
+- Frases curtas, parágrafos curtos, WhatsApp.
+- No máximo 3 blocos e 1–2 emojis.
 
-ESTILO DE RESPOSTA:
-- Escreve como se fosse mensagem de WhatsApp:
-  - Frases curtas
-  - Parágrafos curtos
-  - Linguagem simples e direta
-- Usa emojis com moderação (1–2 no máximo por mensagem), só se fizer sentido.
-- Nunca mandes textão enorme. No máximo 3 blocos:
-  1) Explicação rápida (contexto + conceito)
-  2) 2–3 exemplos com tradução
-  3) Um mini exercício para o aluno responder (1 ou 2 frases, gap-fill, escolha, etc.)
-
-CORREÇÃO DE ERROS:
-- Quando o aluno erra:
-  - Mostra a frase original dele
-  - Mostra a versão corrigida
-  - Faz uma explicação rápida do porquê (sem excesso de gramática pesada) 
-
-TOM EMOCIONAL:
-- Se o aluno demonstrar dificuldade, desmotivação ou cansaço, responde de forma
-  mais acolhedora e incentiva a continuar devagar.
-- Se o aluno estiver empolgado, acompanha essa energia e puxa um pouco mais.
-
-RESUMO:
-Tu és o Kito, uma espécie de "ChatGPT-professor de idiomas" da Jovika Academy:
-inteligente, adaptável, humano, e sempre focado em fazer o aluno realmente
-falar o idioma, não só decorar regras.
   `.trim();
 
   const mensagens = [
@@ -544,6 +524,7 @@ falar o idioma, não só decorar regras.
   const textoGerado =
     resposta.output?.[0]?.content?.[0]?.text ||
     "Desculpa, deu um erro aqui. Tente de novo 🙏";
+
   const textoLimpo = limparTextoResposta(textoGerado);
 
   console.log("🧠 Resposta do Kito (bruta):", textoGerado);
@@ -552,7 +533,7 @@ falar o idioma, não só decorar regras.
   return textoLimpo;
 }
 
-/** ---------- ÁUDIO: download + transcrição (para entender o que o aluno falou) ---------- **/
+/** ---------- ÁUDIO: download + transcrição ---------- **/
 
 async function downloadToTempFile(fileUrl) {
   const cleanUrl = fileUrl.split("?")[0];
@@ -577,7 +558,6 @@ async function transcreverAudio(audioUrl) {
     });
 
     fs.promises.unlink(tempPath).catch(() => {});
-
     console.log("📝 Transcrição:", transcription.text);
     return transcription.text;
   } catch (err) {
@@ -589,7 +569,7 @@ async function transcreverAudio(audioUrl) {
   }
 }
 
-/** ---------- ÁUDIO: TTS (responder com áudio quando o aluno pedir) ---------- **/
+/** ---------- ÁUDIO: TTS ---------- **/
 
 async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   try {
@@ -606,14 +586,13 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
       instructions =
         "Parle en français standard de France, avec une voix masculine naturelle. Parle lentement et très clairement, idéal pour les débutants. Ne parle pas portugais ou anglais.";
     } else {
-      // fallback genérico (PT-BR + FR se aparecer)
       instructions =
         "When the text is in Portuguese, speak Brazilian Portuguese with a clear, natural MALE voice. When the text is in French, pronounce it with a standard metropolitan French accent (France), slow and very clear, ideal for language learners.";
     }
 
     const speech = await openai.audio.speech.create({
       model: process.env.OPENAI_TTS_MODEL || "gpt-4o-mini-tts",
-      voice: process.env.OPENAI_TTS_VOICE || "onyx", // voz fixa
+      voice: process.env.OPENAI_TTS_VOICE || "onyx",
       instructions,
       input: texto,
       response_format: "mp3",
@@ -632,7 +611,7 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
   }
 }
 
-/** ---------- Enviar mensagem pela Z-API (texto) ---------- **/
+/** ---------- Z-API: enviar texto ---------- **/
 
 async function enviarMensagemWhatsApp(phone, message) {
   try {
@@ -648,9 +627,6 @@ async function enviarMensagemWhatsApp(phone, message) {
     }
 
     const url = `https://api.z-api.io/instances/${instanceId}/token/${instanceToken}/send-text`;
-
-    console.log("🌍 URL Z-API usada:", url);
-
     const payload = { phone, message };
 
     const headers = { "Content-Type": "application/json" };
@@ -666,7 +642,7 @@ async function enviarMensagemWhatsApp(phone, message) {
   }
 }
 
-/** ---------- Enviar ÁUDIO pela Z-API (sob pedido) ---------- **/
+/** ---------- Z-API: enviar áudio ---------- **/
 
 async function enviarAudioWhatsApp(phone, audioBase64) {
   try {
@@ -685,7 +661,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
 
     const payload = {
       phone,
-      audio: audioBase64, // "data:audio/mpeg;base64,AAAA..."
+      audio: audioBase64,
       viewOnce: false,
       waveform: true,
     };
@@ -703,7 +679,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
   }
 }
 
-/** ---------- LÓGICA PRINCIPAL DE MENSAGEM (texto ou áudio) ---------- **/
+/** ---------- LÓGICA PRINCIPAL ---------- **/
 
 async function processarMensagemAluno({
   numeroAluno,
@@ -756,14 +732,16 @@ async function processarMensagemAluno({
       moduleStep: 0,
       history: [],
 
-      // ✅ Premium/Paywall
       premium: false,
       paywallShownCount: 0,
       paywallLastShownAt: null,
     };
     students[numeroAluno] = aluno;
 
-    // ✅ HARD PAYWALL: se não for premium, mostra no máximo 2x e bloqueia
+    // ✅ refresh premium (caso alguém já tenha ativado antes)
+    aluno = await refreshPremiumIfNeeded(numeroAluno, aluno);
+
+    // ✅ HARD PAYWALL
     if (!isPremium(aluno)) {
       await aplicarPaywallSeNecessario(numeroAluno, aluno);
       await saveStudentToFirestore(numeroAluno, aluno);
@@ -786,6 +764,9 @@ async function processarMensagemAluno({
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
 
+  // ✅ refresh premium antes do paywall (resolve "volta para false")
+  aluno = await refreshPremiumIfNeeded(numeroAluno, aluno);
+
   // ✅ HARD PAYWALL (antes de qualquer coisa)
   if (!isPremium(aluno)) {
     await aplicarPaywallSeNecessario(numeroAluno, aluno);
@@ -797,7 +778,6 @@ async function processarMensagemAluno({
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
 
-  // 1) Perguntar / guardar nome
   if (aluno.stage === "ask_name" && !aluno.nome) {
     const nome = extrairNome(texto) || "Aluno";
     aluno.nome = nome;
@@ -808,7 +788,6 @@ async function processarMensagemAluno({
       `Perfeito, ${nome}! 😄 Agora me conta: você quer começar por inglês, francês ou os dois?`
     );
   } else if (aluno.stage === "ask_language") {
-    // 2) Perguntar idioma (apenas uma vez)
     const idioma = detectarIdioma(texto);
 
     if (!idioma) {
@@ -837,28 +816,16 @@ async function processarMensagemAluno({
       );
     }
   } else {
-    // 3) Fase de aprendizagem com módulos + memória (tipo ChatGPT)
-    if (aluno.stage !== "learning") {
-      aluno.stage = "learning";
-    }
+    if (aluno.stage !== "learning") aluno.stage = "learning";
 
     const idiomaChave = aluno.idioma === "frances" ? "frances" : "ingles";
-
     const trilha = learningPath[idiomaChave] || learningPath["ingles"];
+
     let moduleIndex = aluno.moduleIndex ?? 0;
     let moduleStep = aluno.moduleStep ?? 0;
+    if (moduleIndex >= trilha.length) moduleIndex = trilha.length - 1;
 
-    let moduloAtual = trilha[moduleIndex] || trilha[0];
-
-    const confirmacao = isConfirmMessage(texto);
-    if (confirmacao) {
-      console.log("✅ Confirmação de continuar módulo recebida.");
-    }
-
-    if (moduleIndex >= trilha.length) {
-      moduleIndex = trilha.length - 1;
-    }
-    moduloAtual = trilha[moduleIndex];
+    const moduloAtual = trilha[moduleIndex] || trilha[0];
 
     const querAudio = userQuerAudio(texto, isAudio);
     const textoNorm = normalizarTexto(texto || "");
@@ -869,21 +836,12 @@ async function processarMensagemAluno({
         textoNorm.includes("exercicios") ||
         textoNorm.includes("exercícios"));
 
-    console.log("DEBUG_QUER_AUDIO:", {
-      texto,
-      isAudio,
-      querAudio,
-      pediuExercicioEmAudio,
-    });
-
-    // idioma alvo para áudio (o que o aluno está a estudar)
     const idiomaAudioAlvo =
       aluno.idioma === "ingles" || aluno.idioma === "frances"
         ? aluno.idioma
         : null;
 
     if (pediuExercicioEmAudio) {
-      // Caso especial: "envia o exercício em áudio"
       const lastAssistant =
         [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
         null;
@@ -898,9 +856,7 @@ async function processarMensagemAluno({
         textoParaAudio,
         idiomaAudioAlvo
       );
-      if (audioBase64) {
-        await enviarAudioWhatsApp(numeroAluno, audioBase64);
-      }
+      if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
 
       const msgConfirm =
         "Pronto! Enviei o exercício em áudio para você ouvir e praticar. Depois me envie suas respostas por mensagem que eu corrijo com carinho, combinado? 🙂";
@@ -909,18 +865,14 @@ async function processarMensagemAluno({
       await sleep(800);
       await enviarMensagemWhatsApp(numeroAluno, msgConfirm);
     } else {
-      // Fluxo normal
       const respostaKito = await gerarRespostaKito(aluno, moduloAtual);
 
-      // Avança micro-passos do módulo
       moduleStep += 1;
       const totalSteps = moduloAtual.steps || 4;
       if (moduleStep >= totalSteps) {
         moduleIndex += 1;
         moduleStep = 0;
-        if (moduleIndex >= trilha.length) {
-          moduleIndex = trilha.length - 1;
-        }
+        if (moduleIndex >= trilha.length) moduleIndex = trilha.length - 1;
       }
 
       aluno.moduleIndex = moduleIndex;
@@ -928,7 +880,6 @@ async function processarMensagemAluno({
 
       aluno.history.push({ role: "assistant", content: respostaKito });
 
-      // ÁUDIO SOB PEDIDO (explicações / frases)
       if (querAudio) {
         const textoParaAudio = extrairTrechoParaAudio(
           respostaKito,
@@ -938,9 +889,7 @@ async function processarMensagemAluno({
           textoParaAudio,
           idiomaAudioAlvo
         );
-        if (audioBase64) {
-          await enviarAudioWhatsApp(numeroAluno, audioBase64);
-        }
+        if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
       }
 
       await sleep(1200);
@@ -976,12 +925,6 @@ app.post("/zapi-webhook", async (req, res) => {
       data.audio?.audioUrl ||
       null;
 
-    console.log("DEBUG_AUDIO_URL:", {
-      hasText: !!texto,
-      audioUrl,
-      audio: data.audio,
-    });
-
     // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
       console.log("⚠️ Mensagem duplicada ignorada (messageId):", msgId);
@@ -994,24 +937,16 @@ app.post("/zapi-webhook", async (req, res) => {
       console.log("⚠️ Mensagem duplicada ignorada (momment):", msgId, momentVal);
       return res.status(200).send("duplicate_moment_ignored");
     }
-    if (momentVal) {
-      lastMomentByPhone[numeroAluno] = momentVal;
-    }
+    if (momentVal) lastMomentByPhone[numeroAluno] = momentVal;
 
     // 3ª defesa: mesmo texto em <3s
     const agora = Date.now();
     const ultimo = lastTextByPhone[numeroAluno];
     if (texto && ultimo && ultimo.text === texto && agora - ultimo.time < 3000) {
-      console.log(
-        "⚠️ Mensagem duplicada ignorada (texto + tempo):",
-        msgId,
-        texto
-      );
+      console.log("⚠️ Mensagem duplicada ignorada (texto + tempo):", msgId, texto);
       return res.status(200).send("duplicate_text_recent");
     }
-    if (texto) {
-      lastTextByPhone[numeroAluno] = { text: texto, time: agora };
-    }
+    if (texto) lastTextByPhone[numeroAluno] = { text: texto, time: agora };
 
     const profileName = data.senderName || data.chatName || "Aluno";
 
@@ -1020,7 +955,6 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("no_text_or_audio");
     }
 
-    // Só áudio → transcreve e trata como texto vindo de áudio
     if (audioUrl && !texto) {
       const transcricao = await transcreverAudio(audioUrl);
 
@@ -1043,7 +977,6 @@ app.post("/zapi-webhook", async (req, res) => {
       return res.status(200).send("ok_audio");
     }
 
-    // Mensagem de texto normal
     await processarMensagemAluno({
       numeroAluno,
       texto,
@@ -1051,12 +984,46 @@ app.post("/zapi-webhook", async (req, res) => {
       isAudio: false,
     });
 
-    res.status(200).send("ok");
+    return res.status(200).send("ok");
   } catch (erro) {
     console.error(
       "❌ Erro no processamento do webhook Z-API:",
       erro?.response?.data || erro.message
     );
+    return res.status(500).send("erro");
+  }
+});
+
+/** ---------- ADMIN: ativar premium por URL (opcional, útil) ----------
+ *  GET /admin/premium?token=SEU_TOKEN&phone=2449...&value=true
+ */
+app.get("/admin/premium", async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (!token || token !== process.env.ADMIN_TOKEN) {
+      return res.status(401).send("Não autorizado");
+    }
+
+    const phone = String(req.query.phone || "").trim();
+    const value = String(req.query.value || "true").toLowerCase() === "true";
+
+    if (!phone) return res.status(400).send("Falta phone");
+
+    if (!db) return res.status(500).send("Firestore não inicializado");
+
+    const docRef = db.collection("students").doc(`whatsapp:${phone}`);
+
+    // aqui pode ligar/desligar de propósito
+    await docRef.set({ premium: value, updatedAt: new Date() }, { merge: true });
+
+    // atualiza cache em memória também
+    const aluno = students[phone] || (await loadStudentFromFirestore(phone)) || {};
+    aluno.premium = value;
+    students[phone] = aluno;
+
+    return res.json({ ok: true, phone, premium: value });
+  } catch (e) {
+    console.error("❌ /admin/premium erro:", e?.message || e);
     return res.status(500).send("erro");
   }
 });
@@ -1080,6 +1047,7 @@ app.get("/admin/dashboard", (req, res) => {
     moduleStep: dados.moduleStep ?? 0,
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
+    premium: dados.premium === true,
   }));
 
   const total = alunos.length;
@@ -1103,138 +1071,32 @@ app.get("/admin/dashboard", (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e5e7eb;
-      padding: 24px;
-    }
-    h1 {
-      font-size: 24px;
-      margin-bottom: 8px;
-    }
-    h2 {
-      font-size: 18px;
-      margin: 24px 0 12px;
-    }
-    .subtitle {
-      color: #9ca3af;
-      margin-bottom: 20px;
-    }
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 16px;
-      margin-bottom: 24px;
-    }
-    .card {
-      background: #111827;
-      border-radius: 12px;
-      padding: 16px;
-      border: 1px solid #1f2937;
-    }
-    .card-title {
-      font-size: 13px;
-      color: #9ca3af;
-      margin-bottom: 4px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    .card-value {
-      font-size: 22px;
-      font-weight: 600;
-    }
-    .card-sub {
-      font-size: 12px;
-      color: #9ca3af;
-      margin-top: 4px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 8px;
-      font-size: 13px;
-    }
-    th, td {
-      padding: 8px 10px;
-      text-align: left;
-      border-bottom: 1px solid #1f2937;
-      vertical-align: top;
-    }
-    th {
-      background: #111827;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    tr:nth-child(even) td {
-      background: #020617;
-    }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 500;
-    }
-    .badge-en {
-      background: rgba(56, 189, 248, 0.15);
-      color: #7dd3fc;
-    }
-    .badge-fr {
-      background: rgba(251, 191, 36, 0.15);
-      color: #facc15;
-    }
-    .badge-both {
-      background: rgba(52, 211, 153, 0.15);
-      color: #6ee7b7;
-    }
-    .stage-pill {
-      font-size: 11px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      background: #111827;
-      color: #e5e7eb;
-      display: inline-block;
-    }
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0f172a; color: #e5e7eb; padding: 24px; }
+    h1 { font-size: 24px; margin-bottom: 8px; }
+    h2 { font-size: 18px; margin: 24px 0 12px; }
+    .subtitle { color: #9ca3af; margin-bottom: 20px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .card { background: #111827; border-radius: 12px; padding: 16px; border: 1px solid #1f2937; }
+    .card-title { font-size: 13px; color: #9ca3af; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .card-value { font-size: 22px; font-weight: 600; }
+    .card-sub { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #1f2937; vertical-align: top; }
+    th { background: #111827; position: sticky; top: 0; z-index: 1; }
+    tr:nth-child(even) td { background: #020617; }
+    .badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500; }
+    .badge-en { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+    .badge-fr { background: rgba(251, 191, 36, 0.15); color: #facc15; }
+    .badge-both { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; }
+    .stage-pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #111827; color: #e5e7eb; display: inline-block; }
     .stage-pill.ask_name { color: #f97316; }
     .stage-pill.ask_language { color: #22c55e; }
     .stage-pill.learning { color: #38bdf8; }
-    .table-wrapper {
-      max-height: 60vh;
-      overflow: auto;
-      border-radius: 12px;
-      border: 1px solid #1f2937;
-      background: #020617;
-    }
-    .top-bar {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      gap: 12px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-    }
-    .pill {
-      font-size: 11px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      border: 1px solid #1f2937;
-      color: #9ca3af;
-    }
-    .footer {
-      margin-top: 24px;
-      font-size: 11px;
-      color: #6b7280;
-    }
-    a {
-      color: #38bdf8;
-      text-decoration: none;
-    }
-    a:hover {
-      text-decoration: underline;
-    }
+    .table-wrapper { max-height: 60vh; overflow: auto; border-radius: 12px; border: 1px solid #1f2937; background: #020617; }
+    .top-bar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
+    .pill { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid #1f2937; color: #9ca3af; }
+    .footer { margin-top: 24px; font-size: 11px; color: #6b7280; }
+    code { background: #0b1220; padding: 2px 6px; border-radius: 6px; }
   </style>
 </head>
 <body>
@@ -1261,18 +1123,13 @@ app.get("/admin/dashboard", (req, res) => {
     </div>
     <div class="card">
       <div class="card-title">Idiomas</div>
-      <div class="card-value">
-        EN: ${ingles} · FR: ${frances} · Ambos: ${ambos}
-      </div>
+      <div class="card-value">EN: ${ingles} · FR: ${frances} · Ambos: ${ambos}</div>
       <div class="card-sub">Distribuição por idioma escolhido</div>
     </div>
     <div class="card">
       <div class="card-title">Mensagens totais (soma)</div>
-      <div class="card-value">${alunos.reduce(
-        (sum, a) => sum + (a.mensagens || 0),
-        0
-      )}</div>
-      <div class="card-sub">Total de mensagens recebidas de todos os alunos</div>
+      <div class="card-value">${alunos.reduce((sum, a) => sum + (a.mensagens || 0), 0)}</div>
+      <div class="card-sub">Total de mensagens recebidas</div>
     </div>
   </div>
 
@@ -1288,6 +1145,7 @@ app.get("/admin/dashboard", (req, res) => {
           <th>Stage</th>
           <th>Módulo</th>
           <th>Msgs</th>
+          <th>Premium</th>
           <th>Entrou em</th>
           <th>Última mensagem</th>
         </tr>
@@ -1295,17 +1153,13 @@ app.get("/admin/dashboard", (req, res) => {
       <tbody>
         ${
           alunos.length === 0
-            ? `<tr><td colspan="9">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
+            ? `<tr><td colspan="10">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
             : alunos
                 .map((a) => {
                   let idiomaBadge = `<span class="badge">${a.idioma}</span>`;
-                  if (a.idioma === "ingles") {
-                    idiomaBadge = `<span class="badge badge-en">Inglês</span>`;
-                  } else if (a.idioma === "frances") {
-                    idiomaBadge = `<span class="badge badge-fr">Francês</span>`;
-                  } else if (a.idioma === "ambos") {
-                    idiomaBadge = `<span class="badge badge-both">Inglês + Francês</span>`;
-                  }
+                  if (a.idioma === "ingles") idiomaBadge = `<span class="badge badge-en">Inglês</span>`;
+                  else if (a.idioma === "frances") idiomaBadge = `<span class="badge badge-fr">Francês</span>`;
+                  else if (a.idioma === "ambos") idiomaBadge = `<span class="badge badge-both">Inglês + Francês</span>`;
 
                   return `
                   <tr>
@@ -1316,6 +1170,7 @@ app.get("/admin/dashboard", (req, res) => {
                     <td><span class="stage-pill ${a.stage}">${a.stage}</span></td>
                     <td>Mód ${a.moduleIndex + 1} · Passo ${a.moduleStep + 1}</td>
                     <td>${a.mensagens}</td>
+                    <td>${a.premium ? "✅" : "—"}</td>
                     <td>${formatDate(a.createdAt)}</td>
                     <td>${formatDate(a.lastMessageAt)}</td>
                   </tr>
@@ -1328,9 +1183,7 @@ app.get("/admin/dashboard", (req, res) => {
   </div>
 
   <div class="footer">
-    Endpoint JSON também disponível em <code>/admin/stats?token=${
-      process.env.ADMIN_TOKEN || "TOKEN"
-    }</code> · Jovika Academy · Professor Kito · ${new Date().getFullYear()}
+    Endpoint JSON: <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Jovika Academy · ${new Date().getFullYear()}
   </div>
 </body>
 </html>
@@ -1356,6 +1209,7 @@ app.get("/admin/stats", (req, res) => {
     stage: dados.stage,
     moduleIndex: dados.moduleIndex ?? 0,
     moduleStep: dados.moduleStep ?? 0,
+    premium: dados.premium === true,
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
   }));
@@ -1382,6 +1236,6 @@ app.get("/", (req, res) => {
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard, TEXTO + ÁUDIO SOB PEDIDO) em http://localhost:${PORT}`
+    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`
   );
 });

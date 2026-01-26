@@ -295,6 +295,54 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
   return texto;
 }
 
+/** ---------- PAYWALL PREMIUM (Express) ---------- **/
+
+const EXPRESS_PAY_NUMBER = "922390075";
+
+function montarMensagemPaywallPremium() {
+  return (
+    `👋 Olá! Eu sou o Kito, professor de inglês e francês da Jovika Academy.\n\n` +
+    `Para usar o **Kito Premium**, é necessário ativar o acesso.\n\n` +
+    `⭐ Vantagens do Premium:\n` +
+    `• 🎧 Áudios com pronúncia correta (inglês/francês)\n` +
+    `• 📘 Aulas personalizadas no seu nível\n` +
+    `• 🔁 Correção dos seus erros em tempo real\n` +
+    `• 🗣️ Treino de conversação com exemplos práticos\n` +
+    `• ⏰ Acompanhamento 24/24h, no seu ritmo\n\n` +
+    `💳 Como ativar (Express – Angola 🇦🇴):\n` +
+    `1) Faça o pagamento via **Express** para: **${EXPRESS_PAY_NUMBER}**\n` +
+    `2) Envie o **comprovativo** aqui no WhatsApp\n` +
+    `3) A nossa equipa **desbloqueia internamente no Firebase** o seu número ✅\n\n` +
+    `Assim que ativar, você pode falar comigo à vontade.`
+  );
+}
+
+function isPremium(aluno) {
+  return aluno && aluno.premium === true;
+}
+
+/**
+ * Se não for premium:
+ * - mostra o paywall no máximo 2 vezes (mesma mensagem)
+ * - depois disso, não repete
+ */
+async function aplicarPaywallSeNecessario(numeroAluno, aluno) {
+  const count = Number(aluno?.paywallShownCount || 0);
+
+  if (count >= 2) {
+    // Máximo atingido: não repete a mensagem.
+    return { blocked: true, paywallSent: false };
+  }
+
+  const msg = montarMensagemPaywallPremium();
+  await enviarMensagemWhatsApp(numeroAluno, msg);
+
+  aluno.paywallShownCount = count + 1;
+  aluno.paywallLastShownAt = new Date();
+
+  return { blocked: true, paywallSent: true };
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -334,6 +382,11 @@ async function saveStudentToFirestore(phone, aluno) {
         createdAt,
         lastMessageAt,
         updatedAt: new Date(),
+
+        // ✅ campos Premium/Paywall (merge, sem quebrar dados existentes)
+        premium: aluno.premium === true,
+        paywallShownCount: aluno.paywallShownCount ?? 0,
+        paywallLastShownAt: aluno.paywallLastShownAt ?? null,
       },
       { merge: true }
     );
@@ -700,8 +753,20 @@ async function processarMensagemAluno({
       moduleIndex: 0,
       moduleStep: 0,
       history: [],
+
+      // ✅ Premium/Paywall
+      premium: false,
+      paywallShownCount: 0,
+      paywallLastShownAt: null,
     };
     students[numeroAluno] = aluno;
+
+    // ✅ HARD PAYWALL: se não for premium, mostra no máximo 2x e bloqueia
+    if (!isPremium(aluno)) {
+      const r = await aplicarPaywallSeNecessario(numeroAluno, aluno);
+      await saveStudentToFirestore(numeroAluno, aluno);
+      return;
+    }
 
     const primeiroNome = extrairNome(profileName) || "Aluno";
 
@@ -718,6 +783,14 @@ async function processarMensagemAluno({
   aluno.messagesCount = (aluno.messagesCount || 0) + 1;
   aluno.lastMessageAt = agora;
   aluno.history = aluno.history || [];
+
+  // ✅ HARD PAYWALL (antes de qualquer coisa)
+  if (!isPremium(aluno)) {
+    const r = await aplicarPaywallSeNecessario(numeroAluno, aluno);
+    students[numeroAluno] = aluno;
+    await saveStudentToFirestore(numeroAluno, aluno);
+    return;
+  }
 
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });

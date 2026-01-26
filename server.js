@@ -314,7 +314,7 @@ function montarMensagemPaywallPremium() {
     `💳 Como ativar (Express – Angola 🇦🇴):\n` +
     `1) Faça o pagamento via **Express** para: **${EXPRESS_PAY_NUMBER}**\n` +
     `2) Envie o **comprovativo** aqui no WhatsApp\n` +
-    `3) A nossa equipa **desbloqueia internamente no Firebase** o seu número ✅\n\n` +
+    `3) A nossa equipa vai **ativar o seu acesso** ✅\n\n` +
     `Assim que ativar, você pode falar comigo à vontade.`
   );
 }

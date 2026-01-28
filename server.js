@@ -288,7 +288,7 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
 
 /** ---------- PAYWALL PREMIUM (Express) ---------- **/
 
-const EXPRESS_PAY_NUMBER = "922390075";
+const EXPRESS_PAY_NUMBER = "922394075";
 const PREMIUM_PRICE_KZ = "13.000 Kz";
 
 function montarMensagemPaywallPremium() {

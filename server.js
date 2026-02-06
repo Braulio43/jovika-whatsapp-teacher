@@ -1,5 +1,6 @@
 // server.js – Kito, professor da Jovika Academy
 // Z-API + memória + módulos + Dashboard + Firestore + ÁUDIO SOB PEDIDO
+// ✅ + LEMBRETE anti-spam (a cada 2 dias) via /cron/tick (cron externo)
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -13,7 +14,7 @@ import { randomUUID } from "node:crypto";
 import { db } from "./firebaseAdmin.js"; // Firestore
 
 console.log(
-  "🔥🔥🔥 KITO v4.8.1 – FIX PREMIUM (não rebaixa) + TEXTO + ÁUDIO SOB PEDIDO 🔥🔥🔥"
+  "🔥🔥🔥 KITO v4.8.1 – FIX PREMIUM (não rebaixa) + TEXTO + ÁUDIO SOB PEDIDO + LEMBRETE 2D 🔥🔥🔥"
 );
 
 dotenv.config();
@@ -29,6 +30,13 @@ const students = {};
 const processedMessages = new Set();
 const lastMomentByPhone = {};
 const lastTextByPhone = {};
+
+/** ---------- CONFIG: LEMBRETES (ANTI-SPAM) ---------- **/
+const REMINDER_ENABLED = String(process.env.REMINDER_ENABLED || "1") === "1";
+const REMINDER_EVERY_HOURS = Number(process.env.REMINDER_EVERY_HOURS || 48); // 2 dias
+const REMINDER_QUERY_LIMIT = Number(process.env.REMINDER_QUERY_LIMIT || 250); // quantos por tick
+const REMINDER_MIN_SILENCE_HOURS = Number(process.env.REMINDER_MIN_SILENCE_HOURS || 48); // só manda se aluno ficou Xh sem falar
+const REMINDER_COOLDOWN_HOURS = Number(process.env.REMINDER_COOLDOWN_HOURS || 48); // não repetir em menos de Xh
 
 /** ---------- Trilhas de ensino (módulos estruturados) ---------- **/
 
@@ -84,12 +92,12 @@ const learningPath = {
 /** ---------- Helpers ---------- **/
 
 function normalizarTexto(txt = "") {
-  return txt.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return String(txt).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
 function extrairNome(frase) {
   if (!frase) return null;
-  const partes = frase.trim().split(/\s+/);
+  const partes = String(frase).trim().split(/\s+/);
   if (!partes.length) return null;
   return partes[0].replace(/[^\p{L}]/gu, "");
 }
@@ -112,17 +120,7 @@ function sleep(ms) {
 // Detecta respostas tipo "sim", "bora", "vamos", "quero"
 function isConfirmMessage(texto = "") {
   const t = normalizarTexto(texto);
-  const palavras = [
-    "sim",
-    "bora",
-    "vamos",
-    "quero",
-    "claro",
-    "ok",
-    "tá bem",
-    "esta bem",
-    "ta bem",
-  ];
+  const palavras = ["sim", "bora", "vamos", "quero", "claro", "ok", "tá bem", "esta bem", "ta bem"];
   return palavras.some((p) => t === p || t.includes(p));
 }
 
@@ -133,6 +131,26 @@ function formatDate(d) {
   } catch {
     return String(d);
   }
+}
+
+function safeToDate(val) {
+  if (!val) return null;
+  if (typeof val?.toDate === "function") return val.toDate(); // Firestore Timestamp
+  const d = val instanceof Date ? val : new Date(val);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function hoursDiff(now, past) {
+  if (!now || !past) return Infinity;
+  const a = safeToDate(now);
+  const b = safeToDate(past);
+  if (!a || !b) return Infinity;
+  return (a.getTime() - b.getTime()) / (1000 * 60 * 60);
+}
+
+function addHours(date, hours) {
+  const d = safeToDate(date) || new Date();
+  return new Date(d.getTime() + Number(hours || 0) * 60 * 60 * 1000);
 }
 
 // 🔊 Detecta se o aluno está a pedir ÁUDIO
@@ -179,19 +197,15 @@ function userQuerAudio(texto = "", isAudio = false) {
 
   const pediuPorAudio =
     isAudio &&
-    (t.includes("pronun") ||
-      t.includes("pronún") ||
-      t.includes("corrig") ||
-      gatilhos.some((p) => t.includes(p)));
+    (t.includes("pronun") || t.includes("pronún") || t.includes("corrig") || gatilhos.some((p) => t.includes(p)));
 
-  const resultado = pediuPorTexto || pediuPorAudio;
-  return resultado;
+  return Boolean(pediuPorTexto || pediuPorAudio);
 }
 
 // Limpa coisas que não queremos que apareçam/lêem, tipo "[Áudio enviado]" ou "(Áudio)"
 function limparTextoResposta(txt = "") {
   if (!txt) return "";
-  let r = txt;
+  let r = String(txt);
 
   r = r.replace(/\[\s*áudio enviado\s*\]/gi, "");
   r = r.replace(/\[\s*audio enviado\s*\]/gi, "");
@@ -216,7 +230,7 @@ function limparTextoResposta(txt = "") {
  * Extrai apenas as linhas do idioma alvo para o áudio
  */
 function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
-  const linhas = texto
+  const linhas = String(texto)
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
@@ -274,11 +288,7 @@ function extrairTrechoParaAudio(texto = "", idiomaAlvo = null) {
     ];
     const enLines = linhas.filter((l) => {
       const t = l.toLowerCase();
-      return (
-        hasLatin.test(l) &&
-        !ptAccents.test(l) &&
-        enKeywords.some((k) => t.startsWith(k))
-      );
+      return hasLatin.test(l) && !ptAccents.test(l) && enKeywords.some((k) => t.startsWith(k));
     });
     if (enLines.length > 0) return enLines.join("\n");
   }
@@ -359,6 +369,51 @@ async function aplicarPaywallSeNecessario(numeroAluno, aluno) {
   return { blocked: true, paywallSent: true };
 }
 
+/** ---------- LEMBRETE: lógica (anti-spam) ---------- **/
+function scheduleReminder(aluno, agora = new Date()) {
+  // agenda para daqui 48h (ou o que estiver no ENV)
+  aluno.reminderDueAt = addHours(agora, REMINDER_EVERY_HOURS);
+  return aluno.reminderDueAt;
+}
+
+function shouldSendReminder(aluno, agora = new Date()) {
+  if (!REMINDER_ENABLED) return false;
+  if (!isPremium(aluno)) return false;
+
+  const lastMsg = safeToDate(aluno.lastMessageAt);
+  if (!lastMsg) return false;
+
+  // só manda se ficou X horas sem falar
+  const silenceH = hoursDiff(agora, lastMsg);
+  if (silenceH < REMINDER_MIN_SILENCE_HOURS) return false;
+
+  // cooldown: não repetir em menos de X horas
+  const lastRem = safeToDate(aluno.lastReminderAt);
+  if (lastRem) {
+    const sinceLastRemH = hoursDiff(agora, lastRem);
+    if (sinceLastRemH < REMINDER_COOLDOWN_HOURS) return false;
+  }
+
+  // dueAt (opcional) — se existir, respeita
+  const due = safeToDate(aluno.reminderDueAt);
+  if (due && due.getTime() > agora.getTime()) return false;
+
+  return true;
+}
+
+function montarMensagemLembrete(aluno) {
+  const nome = aluno?.nome ? `, ${aluno.nome}` : "";
+  const idioma =
+    aluno?.idioma === "frances" ? "francês" : aluno?.idioma === "ingles" ? "inglês" : "inglês ou francês";
+
+  // curta, humana e sem parecer marketing
+  return [
+    `Oi${nome} 😊`,
+    `Passando só para te lembrar da sua prática de ${idioma}.`,
+    `Quer continuar de onde paramos? Se quiser, me diga: *“vamos continuar”*.`,
+  ].join("\n");
+}
+
 /** ---------- Firebase: guardar / carregar aluno ---------- **/
 
 async function saveStudentToFirestore(phone, aluno) {
@@ -371,19 +426,11 @@ async function saveStudentToFirestore(phone, aluno) {
     let createdAt = aluno.createdAt;
     let lastMessageAt = aluno.lastMessageAt;
 
-    if (createdAt && typeof createdAt.toDate === "function") {
-      createdAt = createdAt.toDate();
-    }
-    if (lastMessageAt && typeof lastMessageAt.toDate === "function") {
-      lastMessageAt = lastMessageAt.toDate();
-    }
+    if (createdAt && typeof createdAt.toDate === "function") createdAt = createdAt.toDate();
+    if (lastMessageAt && typeof lastMessageAt.toDate === "function") lastMessageAt = lastMessageAt.toDate();
 
-    if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) {
-      createdAt = new Date();
-    }
-    if (!(lastMessageAt instanceof Date) || isNaN(lastMessageAt.getTime())) {
-      lastMessageAt = new Date();
-    }
+    if (!(createdAt instanceof Date) || isNaN(createdAt.getTime())) createdAt = new Date();
+    if (!(lastMessageAt instanceof Date) || isNaN(lastMessageAt.getTime())) lastMessageAt = new Date();
 
     // ✅ IMPORTANTE:
     // - NÃO gravar premium=false (para não derrubar premium=true manual do Firebase)
@@ -402,11 +449,13 @@ async function saveStudentToFirestore(phone, aluno) {
 
       paywallShownCount: aluno.paywallShownCount ?? 0,
       paywallLastShownAt: aluno.paywallLastShownAt ?? null,
+
+      // ✅ lembretes
+      reminderDueAt: safeToDate(aluno.reminderDueAt) || null,
+      lastReminderAt: safeToDate(aluno.lastReminderAt) || null,
     };
 
-    if (aluno.premium === true) {
-      dataToSave.premium = true;
-    }
+    if (aluno.premium === true) dataToSave.premium = true;
 
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     await docRef.set(dataToSave, { merge: true });
@@ -421,10 +470,20 @@ async function loadStudentFromFirestore(phone) {
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
     const snap = await docRef.get();
     if (!snap.exists) return null;
+
     const data = snap.data();
 
     // normaliza premium
     if (typeof data.premium !== "boolean") data.premium = data.premium === true;
+
+    // normaliza datas
+    data.createdAt = safeToDate(data.createdAt) || null;
+    data.lastMessageAt = safeToDate(data.lastMessageAt) || null;
+    data.paywallLastShownAt = safeToDate(data.paywallLastShownAt) || null;
+
+    // ✅ lembretes
+    data.reminderDueAt = safeToDate(data.reminderDueAt) || null;
+    data.lastReminderAt = safeToDate(data.lastReminderAt) || null;
 
     return data;
   } catch (err) {
@@ -508,13 +567,9 @@ SOBRE ÁUDIO (MUITO IMPORTANTE):
 ESTILO:
 - Frases curtas, parágrafos curtos, WhatsApp.
 - No máximo 3 blocos e 1–2 emojis.
-
   `.trim();
 
-  const mensagens = [
-    { role: "system", content: systemPrompt },
-    ...history.slice(-10),
-  ];
+  const mensagens = [{ role: "system", content: systemPrompt }, ...history.slice(-10)];
 
   const resposta = await openai.responses.create({
     model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
@@ -522,8 +577,7 @@ ESTILO:
   });
 
   const textoGerado =
-    resposta.output?.[0]?.content?.[0]?.text ||
-    "Desculpa, deu um erro aqui. Tente de novo 🙏";
+    resposta.output?.[0]?.content?.[0]?.text || "Desculpa, deu um erro aqui. Tente de novo 🙏";
 
   const textoLimpo = limparTextoResposta(textoGerado);
 
@@ -561,10 +615,7 @@ async function transcreverAudio(audioUrl) {
     console.log("📝 Transcrição:", transcription.text);
     return transcription.text;
   } catch (err) {
-    console.error(
-      "❌ Erro ao transcrever áudio:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao transcrever áudio:", err.response?.data || err.message);
     return null;
   }
 }
@@ -600,13 +651,9 @@ async function gerarAudioRespostaKito(texto, idiomaAlvo = null) {
 
     const buffer = Buffer.from(await speech.arrayBuffer());
     const base64 = buffer.toString("base64");
-    const dataUrl = `data:audio/mpeg;base64,${base64}`;
-    return dataUrl;
+    return `data:audio/mpeg;base64,${base64}`;
   } catch (err) {
-    console.error(
-      "❌ Erro ao gerar áudio de resposta:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao gerar áudio de resposta:", err.response?.data || err.message);
     return null;
   }
 }
@@ -620,9 +667,7 @@ async function enviarMensagemWhatsApp(phone, message) {
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
     if (!instanceId || !instanceToken) {
-      console.error(
-        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env"
-      );
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env");
       return;
     }
 
@@ -635,10 +680,7 @@ async function enviarMensagemWhatsApp(phone, message) {
     const resp = await axios.post(url, payload, { headers });
     console.log("📤 Mensagem enviada via Z-API para", phone, "resp:", resp.data);
   } catch (err) {
-    console.error(
-      "❌ Erro ao enviar mensagem via Z-API:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao enviar mensagem via Z-API:", err.response?.data || err.message);
   }
 }
 
@@ -651,9 +693,7 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const clientToken = process.env.ZAPI_CLIENT_TOKEN;
 
     if (!instanceId || !instanceToken) {
-      console.error(
-        "❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)"
-      );
+      console.error("❌ Z-API: falta ZAPI_INSTANCE_ID ou ZAPI_INSTANCE_TOKEN no .env (áudio)");
       return;
     }
 
@@ -672,21 +712,13 @@ async function enviarAudioWhatsApp(phone, audioBase64) {
     const resp = await axios.post(url, payload, { headers });
     console.log("📤 Áudio enviado via Z-API para", phone, "resp:", resp.data);
   } catch (err) {
-    console.error(
-      "❌ Erro ao enviar áudio via Z-API:",
-      err.response?.data || err.message
-    );
+    console.error("❌ Erro ao enviar áudio via Z-API:", err.response?.data || err.message);
   }
 }
 
 /** ---------- LÓGICA PRINCIPAL ---------- **/
 
-async function processarMensagemAluno({
-  numeroAluno,
-  texto,
-  profileName,
-  isAudio,
-}) {
+async function processarMensagemAluno({ numeroAluno, texto, profileName, isAudio }) {
   let aluno = students[numeroAluno];
   const agora = new Date();
 
@@ -694,19 +726,8 @@ async function processarMensagemAluno({
   if (!aluno) {
     const fromDb = await loadStudentFromFirestore(numeroAluno);
     if (fromDb) {
-      const createdAt =
-        fromDb.createdAt && typeof fromDb.createdAt.toDate === "function"
-          ? fromDb.createdAt.toDate()
-          : fromDb.createdAt
-          ? new Date(fromDb.createdAt)
-          : new Date();
-
-      const lastMessageAt =
-        fromDb.lastMessageAt && typeof fromDb.lastMessageAt.toDate === "function"
-          ? fromDb.lastMessageAt.toDate()
-          : fromDb.lastMessageAt
-          ? new Date(fromDb.lastMessageAt)
-          : new Date();
+      const createdAt = safeToDate(fromDb.createdAt) || new Date();
+      const lastMessageAt = safeToDate(fromDb.lastMessageAt) || new Date();
 
       aluno = {
         ...fromDb,
@@ -735,6 +756,10 @@ async function processarMensagemAluno({
       premium: false,
       paywallShownCount: 0,
       paywallLastShownAt: null,
+
+      // ✅ lembretes
+      reminderDueAt: null,
+      lastReminderAt: null,
     };
     students[numeroAluno] = aluno;
 
@@ -747,6 +772,9 @@ async function processarMensagemAluno({
       await saveStudentToFirestore(numeroAluno, aluno);
       return;
     }
+
+    // ✅ premium: agenda lembrete 48h (se sumir, lembra)
+    scheduleReminder(aluno, agora);
 
     const primeiroNome = extrairNome(profileName) || "Aluno";
 
@@ -774,6 +802,9 @@ async function processarMensagemAluno({
     await saveStudentToFirestore(numeroAluno, aluno);
     return;
   }
+
+  // ✅ premium: sempre que o aluno fala, reagenda o próximo lembrete (48h)
+  scheduleReminder(aluno, agora);
 
   const prefix = isAudio ? "[ÁUDIO] " : "";
   aluno.history.push({ role: "user", content: `${prefix}${texto}` });
@@ -803,11 +834,7 @@ async function processarMensagemAluno({
       aluno.nivel = "A0";
 
       const idiomaTexto =
-        idioma === "ingles"
-          ? "inglês"
-          : idioma === "frances"
-          ? "francês"
-          : "inglês e francês";
+        idioma === "ingles" ? "inglês" : idioma === "frances" ? "francês" : "inglês e francês";
 
       await enviarMensagemWhatsApp(
         numeroAluno,
@@ -836,15 +863,10 @@ async function processarMensagemAluno({
         textoNorm.includes("exercicios") ||
         textoNorm.includes("exercícios"));
 
-    const idiomaAudioAlvo =
-      aluno.idioma === "ingles" || aluno.idioma === "frances"
-        ? aluno.idioma
-        : null;
+    const idiomaAudioAlvo = aluno.idioma === "ingles" || aluno.idioma === "frances" ? aluno.idioma : null;
 
     if (pediuExercicioEmAudio) {
-      const lastAssistant =
-        [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") ||
-        null;
+      const lastAssistant = [...(aluno.history || [])].reverse().find((m) => m.role === "assistant") || null;
 
       let textoParaAudio =
         lastAssistant?.content ||
@@ -852,10 +874,7 @@ async function processarMensagemAluno({
 
       textoParaAudio = extrairTrechoParaAudio(textoParaAudio, idiomaAudioAlvo);
 
-      const audioBase64 = await gerarAudioRespostaKito(
-        textoParaAudio,
-        idiomaAudioAlvo
-      );
+      const audioBase64 = await gerarAudioRespostaKito(textoParaAudio, idiomaAudioAlvo);
       if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
 
       const msgConfirm =
@@ -881,14 +900,8 @@ async function processarMensagemAluno({
       aluno.history.push({ role: "assistant", content: respostaKito });
 
       if (querAudio) {
-        const textoParaAudio = extrairTrechoParaAudio(
-          respostaKito,
-          idiomaAudioAlvo
-        );
-        const audioBase64 = await gerarAudioRespostaKito(
-          textoParaAudio,
-          idiomaAudioAlvo
-        );
+        const textoParaAudio = extrairTrechoParaAudio(respostaKito, idiomaAudioAlvo);
+        const audioBase64 = await gerarAudioRespostaKito(textoParaAudio, idiomaAudioAlvo);
         if (audioBase64) await enviarAudioWhatsApp(numeroAluno, audioBase64);
       }
 
@@ -918,12 +931,7 @@ app.post("/zapi-webhook", async (req, res) => {
     const texto = data.text?.message || null;
 
     let audioUrl =
-      data.audioUrl ||
-      data.audio?.url ||
-      data.media?.url ||
-      data.voice?.url ||
-      data.audio?.audioUrl ||
-      null;
+      data.audioUrl || data.audio?.url || data.media?.url || data.voice?.url || data.audio?.audioUrl || null;
 
     // 1ª defesa: messageId
     if (processedMessages.has(msgId)) {
@@ -986,10 +994,88 @@ app.post("/zapi-webhook", async (req, res) => {
 
     return res.status(200).send("ok");
   } catch (erro) {
-    console.error(
-      "❌ Erro no processamento do webhook Z-API:",
-      erro?.response?.data || erro.message
-    );
+    console.error("❌ Erro no processamento do webhook Z-API:", erro?.response?.data || erro.message);
+    return res.status(500).send("erro");
+  }
+});
+
+/** ---------- CRON: lembretes 2 em 2 dias (ANTI-SPAM) ----------
+ *  Chamar via cron externo:
+ *  GET /cron/tick?token=SEU_ADMIN_TOKEN
+ */
+app.get("/cron/tick", async (req, res) => {
+  try {
+    const token = String(req.query.token || "");
+    if (!token || token !== process.env.ADMIN_TOKEN) {
+      return res.status(401).send("Não autorizado");
+    }
+
+    if (!REMINDER_ENABLED) {
+      return res.json({ ok: true, remindersEnabled: false, sent: 0 });
+    }
+
+    if (!db) return res.status(500).send("Firestore não inicializado");
+
+    const agora = new Date();
+    let sent = 0;
+
+    // Busca premium=true (como seu modelo atual)
+    const snap = await db.collection("students").where("premium", "==", true).limit(REMINDER_QUERY_LIMIT).get();
+
+    for (const doc of snap.docs) {
+      const id = String(doc.id || ""); // whatsapp:244...
+      const phone = id.startsWith("whatsapp:") ? id.replace("whatsapp:", "") : id;
+      if (!phone) continue;
+
+      const data = doc.data() || {};
+      const aluno = {
+        ...data,
+        createdAt: safeToDate(data.createdAt),
+        lastMessageAt: safeToDate(data.lastMessageAt),
+        paywallLastShownAt: safeToDate(data.paywallLastShownAt),
+
+        reminderDueAt: safeToDate(data.reminderDueAt),
+        lastReminderAt: safeToDate(data.lastReminderAt),
+      };
+
+      // ✅ condição anti-spam
+      if (!shouldSendReminder(aluno, agora)) continue;
+
+      const msg = montarMensagemLembrete(aluno);
+
+      await enviarMensagemWhatsApp(phone, msg);
+
+      // marca lembrete enviado + agenda próximo para 48h (se continuar sumido)
+      const lastReminderAt = agora;
+      const reminderDueAt = addHours(agora, REMINDER_EVERY_HOURS);
+
+      await db
+        .collection("students")
+        .doc(doc.id)
+        .set(
+          {
+            lastReminderAt,
+            reminderDueAt,
+            updatedAt: new Date(),
+          },
+          { merge: true }
+        );
+
+      sent++;
+      await sleep(250); // mini delay
+    }
+
+    return res.json({
+      ok: true,
+      remindersEnabled: true,
+      sent,
+      limit: REMINDER_QUERY_LIMIT,
+      everyHours: REMINDER_EVERY_HOURS,
+      minSilenceHours: REMINDER_MIN_SILENCE_HOURS,
+      cooldownHours: REMINDER_COOLDOWN_HOURS,
+    });
+  } catch (e) {
+    console.error("❌ /cron/tick erro:", e?.message || e);
     return res.status(500).send("erro");
   }
 });
@@ -1008,7 +1094,6 @@ app.get("/admin/premium", async (req, res) => {
     const value = String(req.query.value || "true").toLowerCase() === "true";
 
     if (!phone) return res.status(400).send("Falta phone");
-
     if (!db) return res.status(500).send("Firestore não inicializado");
 
     const docRef = db.collection("students").doc(`whatsapp:${phone}`);
@@ -1019,7 +1104,14 @@ app.get("/admin/premium", async (req, res) => {
     // atualiza cache em memória também
     const aluno = students[phone] || (await loadStudentFromFirestore(phone)) || {};
     aluno.premium = value;
+
+    // ✅ se virou premium, agenda lembrete 48h
+    if (value === true) scheduleReminder(aluno, new Date());
+
     students[phone] = aluno;
+
+    // salva campos do lembrete também
+    await saveStudentToFirestore(phone, aluno);
 
     return res.json({ ok: true, phone, premium: value });
   } catch (e) {
@@ -1048,6 +1140,10 @@ app.get("/admin/dashboard", (req, res) => {
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
     premium: dados.premium === true,
+
+    // ✅ lembretes
+    reminderDueAt: dados.reminderDueAt || null,
+    lastReminderAt: dados.lastReminderAt || null,
   }));
 
   const total = alunos.length;
@@ -1148,12 +1244,14 @@ app.get("/admin/dashboard", (req, res) => {
           <th>Premium</th>
           <th>Entrou em</th>
           <th>Última mensagem</th>
+          <th>Próx. lembrete</th>
+          <th>Últ. lembrete</th>
         </tr>
       </thead>
       <tbody>
         ${
           alunos.length === 0
-            ? `<tr><td colspan="10">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
+            ? `<tr><td colspan="12">Ainda não há alunos. Assim que alguém mandar "oi" para o Kito, aparece aqui. 😄</td></tr>`
             : alunos
                 .map((a) => {
                   let idiomaBadge = `<span class="badge">${a.idioma}</span>`;
@@ -1173,6 +1271,8 @@ app.get("/admin/dashboard", (req, res) => {
                     <td>${a.premium ? "✅" : "—"}</td>
                     <td>${formatDate(a.createdAt)}</td>
                     <td>${formatDate(a.lastMessageAt)}</td>
+                    <td>${formatDate(a.reminderDueAt)}</td>
+                    <td>${formatDate(a.lastReminderAt)}</td>
                   </tr>
                   `;
                 })
@@ -1183,7 +1283,9 @@ app.get("/admin/dashboard", (req, res) => {
   </div>
 
   <div class="footer">
-    Endpoint JSON: <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Jovika Academy · ${new Date().getFullYear()}
+    Endpoint JSON: <code>/admin/stats?token=${process.env.ADMIN_TOKEN || "TOKEN"}</code> · Cron: <code>/cron/tick?token=${
+    process.env.ADMIN_TOKEN || "TOKEN"
+  }</code> · Jovika Academy · ${new Date().getFullYear()}
   </div>
 </body>
 </html>
@@ -1212,6 +1314,10 @@ app.get("/admin/stats", (req, res) => {
     premium: dados.premium === true,
     createdAt: dados.createdAt,
     lastMessageAt: dados.lastMessageAt,
+
+    // ✅ lembretes
+    reminderDueAt: dados.reminderDueAt || null,
+    lastReminderAt: dados.lastReminderAt || null,
   }));
 
   const total = alunos.length;
@@ -1222,6 +1328,13 @@ app.get("/admin/stats", (req, res) => {
   res.json({
     totalAlunos: total,
     porIdioma: { ingles, frances, ambos },
+    reminders: {
+      enabled: REMINDER_ENABLED,
+      everyHours: REMINDER_EVERY_HOURS,
+      minSilenceHours: REMINDER_MIN_SILENCE_HOURS,
+      cooldownHours: REMINDER_COOLDOWN_HOURS,
+      queryLimit: REMINDER_QUERY_LIMIT,
+    },
     alunos,
   });
 });
@@ -1229,13 +1342,11 @@ app.get("/admin/stats", (req, res) => {
 // Rota de teste
 app.get("/", (req, res) => {
   res.send(
-    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO) está a correr ✅"
+    "Servidor Kito (Jovika Academy, Z-API + memória + módulos, TEXTO + ÁUDIO SOB PEDIDO + LEMBRETES) está a correr ✅"
   );
 });
 
 // Iniciar servidor
 app.listen(PORT, () => {
-  console.log(
-    `🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`
-  );
+  console.log(`🚀 Servidor REST (Kito + Z-API + memória + Dashboard) em http://localhost:${PORT}`);
 });
